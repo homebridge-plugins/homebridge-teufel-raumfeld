@@ -5,13 +5,13 @@
   "description": "Control Teufel Raumfeld multiroom speakers from Apple HomeKit, with AirPlay streaming from iOS.",
   "license": "MIT",
   "author": "Alexander Peither",
-  "homepage": "https://github.com/AlexPe-Code/Homebride---Raufeld-plugin#readme",
+  "homepage": "https://github.com/AlexPe-Code/homebridge-raumfeld#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AlexPe-Code/Homebride---Raufeld-plugin.git"
+    "url": "git+https://github.com/AlexPe-Code/homebridge-raumfeld.git"
   },
   "bugs": {
-    "url": "https://github.com/AlexPe-Code/Homebride---Raufeld-plugin/issues"
+    "url": "https://github.com/AlexPe-Code/homebridge-raumfeld/issues"
   },
   "type": "module",
   "engines": {
