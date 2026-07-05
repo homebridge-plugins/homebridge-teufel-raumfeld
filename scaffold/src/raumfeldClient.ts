@@ -177,7 +177,8 @@ export class RaumfeldClient {
    */
   async setPlayState(rendererUdn: string, targetMediaState: number): Promise<void> {
     const action = targetMediaState === 0 ? 'Play' : targetMediaState === 1 ? 'Pause' : 'Stop';
-    const args = action === 'Play' ? { InstanceID: 0, Speed: '1' } : { InstanceID: 0 };
+    const args: Record<string, string | number> = { InstanceID: 0 };
+    if (action === 'Play') args.Speed = '1';
     await this.soap(rendererUdn, 'avTransport', action, args);
   }
 
