@@ -53,20 +53,22 @@ const SOAP_SERVICE = {
  *
  * Two surfaces are used:
  *  1. The host HTTP API on port 47365:  GET /getZones (with a long-poll
- *     ?updateId=.. for change notifications), GET /connectRoomToZone,
- *     GET /dropRoom.
+ *     ?updateId=.. for change notifications), GET /listDevices (every device's
+ *     description URL), GET /connectRoomToZone, GET /dropRoom.
  *  2. UPnP / OpenHome services per renderer (RenderingControl SetVolume/SetMute,
  *     AVTransport Play/Pause/Stop) reached via SOAP. Control URLs are resolved
- *     lazily from each renderer's device description, whose LOCATION we learn
- *     from SSDP.
+ *     lazily from each renderer's device description, whose location comes from
+ *     /listDevices — HTTP, so it works even when Homebridge and the speakers sit
+ *     on different subnets (SSDP multicast would not cross that boundary). SSDP
+ *     is used only to auto-discover the host IP.
  */
 export class RaumfeldClient {
   private readonly parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
-  /** udn -> device-description LOCATION, populated by the background SSDP search. */
+  /** udn -> device-description LOCATION, learned from the host's /listDevices. */
   private readonly locations = new Map<string, string>();
   /** udn -> resolved control URLs (memoised). */
   private readonly renderers = new Map<string, ResolvedRenderer>();
-  private ssdpClient?: InstanceType<typeof SsdpClient>;
+  private locationTimer?: NodeJS.Timeout;
   private lastUpdateId?: string;
   private disposed = false;
 
@@ -122,13 +124,20 @@ export class RaumfeldClient {
     this.log.info(`Connecting to Raumfeld host at ${this.baseUrl}`);
     const res = await fetchWithTimeout(`${this.baseUrl}/getZones`, {}, 4000);
     if (!res.ok) throw new Error(`Host returned HTTP ${res.status} for /getZones`);
-    this.startSsdpDirectory();
+    // Learn every device's description URL from the host over HTTP. Unlike SSDP
+    // this works across subnets (Homebridge and the speakers on different VLANs),
+    // and includes the per-zone virtual renderers used for group control.
+    await this.refreshDeviceLocations();
+    this.locationTimer = setInterval(() => {
+      this.refreshDeviceLocations().catch(() => undefined);
+    }, 60000);
+    this.locationTimer.unref?.();
   }
 
   dispose(): void {
     this.disposed = true;
-    this.ssdpClient?.stop();
-    this.ssdpClient = undefined;
+    if (this.locationTimer) clearInterval(this.locationTimer);
+    this.locationTimer = undefined;
   }
 
   /**
@@ -251,11 +260,15 @@ export class RaumfeldClient {
       rooms.push(...zoneRooms);
       if (zoneRooms.length === 0) continue;
       const lead = zoneRooms[0];
+      // A zone's udn is itself a MediaRenderer (the group's virtual renderer):
+      // controlling it drives all member speakers in sync. Fall back to the
+      // lead room's renderer if the host doesn't expose a zone renderer.
+      const zoneUdn = attr(zoneNode, 'udn') ?? lead.udn;
       zones.push({
-        udn: attr(zoneNode, 'udn') ?? lead.udn,
+        udn: zoneUdn,
         name: zoneRooms.map((r) => r.name).join(' + '),
         leadRoomUdn: lead.udn,
-        leadRendererUdn: lead.rendererUdn,
+        leadRendererUdn: zoneUdn,
         rooms: zoneRooms,
       });
     }
@@ -321,29 +334,21 @@ export class RaumfeldClient {
     return { volume, mute };
   }
 
-  /** Kick off (and keep refreshing) the SSDP directory of udn -> description URL. */
-  private startSsdpDirectory(): void {
-    const client = new SsdpClient();
-    this.ssdpClient = client;
-    client.on('response', (headers: Record<string, string>) => {
-      const usn = headers.USN ?? headers.usn;
-      const location = headers.LOCATION ?? headers.location;
-      if (!usn || !location) return;
-      const match = /uuid:[^:]+/i.exec(usn);
-      if (match) this.locations.set(match[0], location);
-    });
-    const scan = () => {
-      if (this.disposed) return;
-      try {
-        client.search('urn:schemas-upnp-org:device:MediaRenderer:1');
-        client.search('ssdp:all');
-      } catch (err) {
-        this.log.debug(`SSDP scan error: ${(err as Error).message}`);
-      }
-    };
-    scan();
-    const timer = setInterval(scan, 60000);
-    timer.unref?.();
+  /**
+   * Refresh the udn -> description-URL map from the host's /listDevices. This
+   * enumerates every speaker, connector and per-zone virtual renderer with an
+   * HTTP location that is reachable across subnets (no SSDP multicast needed).
+   */
+  private async refreshDeviceLocations(): Promise<void> {
+    if (this.disposed) return;
+    const res = await fetchWithTimeout(`${this.baseUrl}/listDevices`, {}, 5000);
+    if (!res.ok) return;
+    const doc = this.parser.parse(await res.text());
+    for (const dev of asArray(doc.devices?.device)) {
+      const udn = attr(dev, 'udn');
+      const location = attr(dev, 'location');
+      if (udn && location) this.locations.set(udn, location);
+    }
   }
 
   /** Resolve (and cache) a renderer's control URLs from its device description. */
@@ -351,6 +356,8 @@ export class RaumfeldClient {
     const cached = this.renderers.get(rendererUdn);
     if (cached) return cached;
 
+    // A newly-appeared renderer may not be in the map yet — refresh once.
+    if (!this.locations.has(rendererUdn)) await this.refreshDeviceLocations();
     const location = this.locations.get(rendererUdn);
     if (!location) return undefined;
 
