@@ -21,9 +21,9 @@ export interface UpdateState {
  * with volume + mute + a current-media state.
  *
  * Locking rule: when `lockedInGroup` is true this member room is not
- * independently controllable — StatusFault flags it (Home renders it greyed,
- * "In <group> · in use") and any write is routed to the group lead renderer
- * rather than dropped, so the control still does something sensible.
+ * independently controllable, so any write is routed to the group lead renderer
+ * (see writeTarget()) rather than moving the member alone — the group is the
+ * real controllable unit while it exists.
  */
 export class ZoneAccessory {
   private readonly speaker: Service;
@@ -83,14 +83,13 @@ export class ZoneAccessory {
       Characteristic.CurrentMediaState,
       src.playing ? Characteristic.CurrentMediaState.PLAY : Characteristic.CurrentMediaState.PAUSE,
     );
-
-    // Reflect the "in use" lock so Home greys the member tile. Writes are still
-    // accepted and routed to the group lead (see writeTarget()).
-    this.setChar(
-      Characteristic.StatusFault,
-      this.locked ? Characteristic.StatusFault.GENERAL_FAULT : Characteristic.StatusFault.NO_FAULT,
-    );
     this.setChar(Characteristic.ConfiguredName, src.name);
+
+    // The "in use" lock is enforced by routing member writes to the group lead
+    // (see writeTarget()). We deliberately do NOT surface it via StatusFault:
+    // that characteristic isn't part of the SmartSpeaker service and Homebridge
+    // warns "Adding anyway" for every accessory. Home already shows grouped
+    // members as controlled-together via the group accessory.
   }
 
   /** Where a write for this accessory should land right now. */
