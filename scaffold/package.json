@@ -1,0 +1,38 @@
+{
+  "displayName": "Homebridge Raumfeld",
+  "name": "homebridge-raumfeld",
+  "version": "0.1.0",
+  "description": "Control Teufel Raumfeld multiroom speakers from Apple HomeKit, with AirPlay streaming from iOS.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "homebridge": "^1.8.0 || ^2.0.0",
+    "node": "^18.20.0 || ^20.18.0 || ^22.10.0"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "lint": "eslint src --ext .ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "raumfeld",
+    "teufel",
+    "multiroom",
+    "airplay",
+    "upnp",
+    "openhome"
+  ],
+  "dependencies": {
+    "node-ssdp": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "homebridge": "^1.8.0",
+    "typescript": "^5.5.0"
+  },
+  "//dependencies-note": "Add a UPnP/OpenHome SOAP client (e.g. a small SOAP helper over the Raumfeld host HTTP API on port 47365) and, for AirPlay, an airtunes2 / shairport-sync bridge. Left out here so the implementer can pick the approach.",
+  "funding": []
+}

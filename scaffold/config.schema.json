@@ -1,0 +1,90 @@
+{
+  "pluginAlias": "Raumfeld",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Control Teufel Raumfeld multiroom speakers from Apple HomeKit, with AirPlay streaming from iOS. Zone groups are created in the Raumfeld app and mirrored here.",
+  "footerDisplay": "Restart Homebridge after saving. Groups are imported live from the Raumfeld host; members are locked in HomeKit while a group is active.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Platform Name",
+        "type": "string",
+        "default": "Raumfeld",
+        "required": true
+      },
+      "autoDiscover": {
+        "title": "Auto-discover host",
+        "description": "Find the Raumfeld host automatically via SSDP.",
+        "type": "boolean",
+        "default": true
+      },
+      "host": {
+        "title": "Raumfeld host",
+        "description": "IP or hostname of the Raumfeld host. Ignored when auto-discover is on.",
+        "type": "string",
+        "placeholder": "192.168.178.42",
+        "format": "hostname",
+        "condition": {
+          "functionBody": "return model.autoDiscover === false;"
+        }
+      },
+      "pollInterval": {
+        "title": "Poll interval (seconds)",
+        "type": "integer",
+        "default": 2,
+        "minimum": 1,
+        "maximum": 60
+      },
+      "airplay": {
+        "title": "AirPlay bridge",
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "title": "Enable AirPlay streaming",
+            "description": "Expose zones as AirPlay 2 receivers for iOS.",
+            "type": "boolean",
+            "default": true
+          },
+          "bufferMs": {
+            "title": "Audio buffer (ms)",
+            "type": "integer",
+            "default": 220,
+            "minimum": 50,
+            "maximum": 2000
+          }
+        }
+      },
+      "multiroom": {
+        "title": "Multiroom",
+        "type": "object",
+        "properties": {
+          "exposeGroups": {
+            "title": "Expose groups as accessories",
+            "type": "boolean",
+            "default": true
+          },
+          "syncGroupVolume": {
+            "title": "Sync group volume",
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "devices": {
+        "title": "Devices exposed to HomeKit",
+        "description": "Populated from discovery. Toggle a device off to hide it from HomeKit.",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "udn": { "title": "UDN", "type": "string", "readonly": true },
+            "name": { "title": "Room", "type": "string" },
+            "model": { "title": "Model", "type": "string", "readonly": true },
+            "exposed": { "title": "Expose to HomeKit", "type": "boolean", "default": true }
+          }
+        }
+      }
+    }
+  }
+}
