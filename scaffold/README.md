@@ -22,10 +22,13 @@ npm run build          # tsc -> dist/
 ```
 Then add to Homebridge `config.json` a platform block `{ "platform": "Raumfeld" }` (or configure via the UI from `config.schema.json`).
 
-## What's left to implement (the real work)
-1. **`raumfeldClient.ts`** — SSDP discovery, `GET /getZones` parsing, SOAP volume/play/mute, and the group endpoints. Prefer the long-poll `updateId` / GENA eventing so groups made in the Raumfeld app appear instantly.
-2. **`platform.ts` `sync()`** — the reconcile diff and accessory pruning.
-3. **AirPlay bridge** — a shairport-sync / airtunes2 receiver per zone that pushes PCM into the zone renderer (`SetChannel`/play-URL). AirPlay 1 single-zone is a fine first milestone.
-4. **Multiroom lock** — confirm the HomeKit treatment for "in use" members (StatusFault vs. routing writes to the group lead) behaves well in the Home app; see the parent README.
+## Implementation status
+1. **`raumfeldClient.ts`** — ✅ SSDP discovery, `GET /getZones` XML parsing, hand-rolled SOAP for `RenderingControl` (volume/mute) and `AVTransport` (play/pause/stop), the `connectRoomToZone` / `dropRoom` group endpoints, and a `waitForChange()` long-poll on `updateId` so groups made in the Raumfeld app appear near-instantly. Renderer control URLs are resolved lazily from each device description (LOCATION learned via SSDP).
+2. **`platform.ts` `sync()`** — ✅ single-round-trip reconcile of rooms + zones, add/update/prune of accessories, member-lock computation, and a long-poll loop with an infrequent safety-net poll.
+3. **`zoneAccessory.ts`** — ✅ SmartSpeaker with volume/mute/transport; locked members are flagged via `StatusFault` and their writes are routed to the group lead renderer (README "Multiroom" rule).
+4. **`airplayBridge.ts`** — ⏳ lifecycle scaffold: advertises one receiver per zone/group and owns session bookkeeping. The native audio path (shairport-sync / airtunes2 spawn + PCM → renderer hand-off) is left as a single documented seam, `startReceiver()`. AirPlay 1 single-zone is the intended first milestone.
+5. **Config UI (`homebridge-ui/`)** — ✅ a custom Config UI X page recreating design **1b** (status pill, connection, live device toggles, AirPlay/multiroom sections, read-only live zone groups) backed by `server.js`, which reads `/getZones` from the host.
+
+> **Build note:** this was authored without a local Node toolchain, so `npm run build` / `tsc` were not executed here — run them before publishing.
 
 The visual target for the config screen and the end-user Home experience is `../Raumfeld Homebridge.dc.html` (badges 1b and 1a).

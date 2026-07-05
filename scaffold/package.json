@@ -10,6 +10,11 @@
     "node": "^18.20.0 || ^20.18.0 || ^22.10.0"
   },
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "config.schema.json",
+    "homebridge-ui"
+  ],
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
@@ -26,6 +31,8 @@
     "openhome"
   ],
   "dependencies": {
+    "@homebridge/plugin-ui-utils": "^1.0.3",
+    "fast-xml-parser": "^4.4.1",
     "node-ssdp": "^4.0.1"
   },
   "devDependencies": {
@@ -33,6 +40,6 @@
     "homebridge": "^1.8.0",
     "typescript": "^5.5.0"
   },
-  "//dependencies-note": "Add a UPnP/OpenHome SOAP client (e.g. a small SOAP helper over the Raumfeld host HTTP API on port 47365) and, for AirPlay, an airtunes2 / shairport-sync bridge. Left out here so the implementer can pick the approach.",
+  "//dependencies-note": "SOAP is hand-rolled over global fetch (see src/raumfeldClient.ts); /getZones XML is parsed with fast-xml-parser. For a production AirPlay path, add an airtunes2 / shairport-sync bridge where src/airplayBridge.ts spawns the receiver.",
   "funding": []
 }

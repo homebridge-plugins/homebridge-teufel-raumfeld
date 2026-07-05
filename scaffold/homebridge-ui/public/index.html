@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Raumfeld</title>
+<style>
+  /* ---- design tokens (handoff §Design Tokens) ---- */
+  :root {
+    --accent: #0A84FF;
+    --green: #34C759;
+    --green-text: #248A3D;
+    --purple-chip-bg: rgba(175,82,222,0.12);
+    --purple-chip-text: #8944AB;
+    --blue-chip-bg: rgba(10,132,255,0.14);
+    --text-1: #1C1C1E;
+    --text-2: #48484A;
+    --text-3: #8E8E93;
+    --text-disabled: #AEAEB2;
+    --bg-grouped: #F2F2F7;
+    --card: #FFFFFF;
+    --inset: #F7F7FA;
+    --control-fill: #E5E5EA;
+    --sep: rgba(60,60,67,0.09);
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font-family: var(--sans);
+    color: var(--text-1);
+    background: #E9E9EE;
+    display: flex; justify-content: center;
+  }
+  .card {
+    width: 100%; max-width: 560px;
+    background: var(--bg-grouped);
+    border-radius: 22px; overflow: hidden;
+    box-shadow: 0 30px 60px -35px rgba(0,0,0,0.3);
+  }
+  /* ---- header ---- */
+  .header {
+    background: var(--card);
+    padding: 18px 20px;
+    display: flex; align-items: center; gap: 14px;
+    border-bottom: 1px solid var(--sep);
+  }
+  .app-icon {
+    width: 46px; height: 46px; border-radius: 12px; flex: none;
+    background: linear-gradient(160deg,#0A84FF,#0060DF);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .app-icon svg { width: 26px; height: 26px; }
+  .header .title { font-size: 18px; font-weight: 700; line-height: 1.2; }
+  .header .subtitle { font-family: var(--mono); font-size: 12px; color: var(--text-3); margin-top: 2px; }
+  .pill {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border-radius: 999px; font-size: 13px; font-weight: 600;
+    background: rgba(52,199,89,0.14); color: var(--green-text);
+  }
+  .pill .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--green); }
+  .pill.pulsing .dot { animation: pulse 1.6s ease-in-out infinite; }
+  .pill.error { background: rgba(255,59,48,0.14); color: #D70015; }
+  .pill.error .dot { background: #FF3B30; animation: none; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  /* ---- sections ---- */
+  .body { padding: 16px; }
+  .section { margin-bottom: 22px; }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.02em; margin: 0 12px 8px; }
+  .section-note { font-size: 12px; color: var(--text-3); margin: 8px 12px 0; line-height: 1.4; }
+  .group-card { background: var(--card); border-radius: 14px; overflow: hidden; }
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 14px; border-bottom: 1px solid var(--sep);
+  }
+  .row:last-child { border-bottom: none; }
+  .row .label { font-size: 16px; }
+  .row .value { margin-left: auto; font-family: var(--mono); font-size: 15px; color: var(--text-3); }
+  .row .value input {
+    font: inherit; text-align: right; border: none; background: transparent;
+    color: var(--text-2); width: 150px;
+  }
+  .row .value input:focus { outline: none; color: var(--accent); }
+  .row .subtitle { font-size: 13px; color: var(--text-3); margin-top: 2px; }
+  .row .grow { display: flex; flex-direction: column; }
+  .dev-icon {
+    width: 30px; height: 30px; border-radius: 8px; flex: none;
+    display: flex; align-items: center; justify-content: center; color: #fff;
+  }
+  .dev-icon svg { width: 17px; height: 17px; }
+  .row.disabled .label, .row.disabled .subtitle { color: var(--text-disabled); }
+  .row.disabled .dev-icon { background: var(--control-fill) !important; color: var(--text-3); }
+  /* ---- iOS switch ---- */
+  .switch { position: relative; width: 51px; height: 31px; flex: none; margin-left: auto; }
+  .switch input { opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .switch .track {
+    position: absolute; inset: 0; border-radius: 999px; background: var(--control-fill);
+    transition: background 0.2s; pointer-events: none;
+  }
+  .switch .knob {
+    position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 999px;
+    background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.2); transition: transform 0.2s; pointer-events: none;
+  }
+  .switch input:checked ~ .track { background: var(--green); }
+  .switch.accent input:checked ~ .track { background: var(--accent); }
+  .switch input:checked ~ .knob { transform: translateX(20px); }
+  /* ---- zone groups ---- */
+  .zone-row { display: flex; align-items: flex-start; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--sep); }
+  .zone-row:last-child { border-bottom: none; }
+  .zone-icon { width: 30px; height: 30px; border-radius: 8px; flex: none; display: flex; align-items: center; justify-content: center; color: #fff; }
+  .zone-icon svg { width: 17px; height: 17px; }
+  .zone-name { font-size: 16px; font-weight: 600; }
+  .zone-master { font-size: 13px; color: var(--text-3); margin: 2px 0 6px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--blue-chip-bg); color: var(--accent); }
+  .chip.purple { background: var(--purple-chip-bg); color: var(--purple-chip-text); }
+  /* ---- save ---- */
+  .save-btn {
+    width: 100%; padding: 14px; border: none; border-radius: 14px;
+    background: var(--accent); color: #fff; font-size: 16px; font-weight: 600; cursor: pointer;
+  }
+  .save-btn:active { opacity: 0.85; }
+  .save-btn:disabled { opacity: 0.5; cursor: default; }
+  .restart-note { text-align: center; font-size: 12px; color: var(--text-3); margin-top: 10px; }
+  .empty { padding: 16px 14px; font-size: 13px; color: var(--text-3); }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="header">
+    <div class="app-icon">
+      <!-- speaker glyph -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="6" y="2" width="12" height="20" rx="3"/><circle cx="12" cy="15" r="3"/><circle cx="12" cy="6.5" r="1"/>
+      </svg>
+    </div>
+    <div>
+      <div class="title">Raumfeld</div>
+      <div class="subtitle" id="hostSubtitle">v1.4.0 · host —</div>
+    </div>
+    <div class="pill error" id="statusPill"><span class="dot"></span><span id="statusText">Disconnected</span></div>
+  </div>
+
+  <div class="body">
+    <!-- CONNECTION -->
+    <div class="section">
+      <div class="section-title">Connection</div>
+      <div class="group-card">
+        <div class="row">
+          <span class="label">Auto-discover host</span>
+          <label class="switch"><input type="checkbox" id="autoDiscover" checked><span class="track"></span><span class="knob"></span></label>
+        </div>
+        <div class="row">
+          <span class="label">Raumfeld host</span>
+          <span class="value"><input type="text" id="host" placeholder="192.168.178.42" spellcheck="false"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- DEVICES -->
+    <div class="section">
+      <div class="section-title">Devices exposed to HomeKit</div>
+      <div class="group-card" id="devices"><div class="empty">Connect to a host to list speakers…</div></div>
+    </div>
+
+    <!-- AIRPLAY -->
+    <div class="section">
+      <div class="section-title">AirPlay bridge</div>
+      <div class="group-card">
+        <div class="row">
+          <span class="grow">
+            <span class="label">Enable AirPlay streaming</span>
+            <span class="subtitle">Expose zones as AirPlay 2 receivers</span>
+          </span>
+          <label class="switch accent"><input type="checkbox" id="airplayEnabled" checked><span class="track"></span><span class="knob"></span></label>
+        </div>
+        <div class="row">
+          <span class="label">Audio buffer</span>
+          <span class="value"><input type="number" id="bufferMs" min="50" max="2000" step="10" value="220">&nbsp;ms</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- MULTIROOM -->
+    <div class="section">
+      <div class="section-title">Multiroom</div>
+      <div class="group-card">
+        <div class="row">
+          <span class="label">Expose groups as accessories</span>
+          <label class="switch"><input type="checkbox" id="exposeGroups" checked><span class="track"></span><span class="knob"></span></label>
+        </div>
+        <div class="row">
+          <span class="label">Sync group volume</span>
+          <label class="switch"><input type="checkbox" id="syncGroupVolume" checked><span class="track"></span><span class="knob"></span></label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ZONE GROUPS (read-only, live) -->
+    <div class="section">
+      <div class="section-title">Zone groups · imported live from the Raumfeld app</div>
+      <div class="group-card" id="zoneGroups"><div class="empty">No active groups.</div></div>
+      <div class="section-note">Groups are created in the Raumfeld app. Members are locked in HomeKit while the group is active.</div>
+    </div>
+
+    <button class="save-btn" id="save">Save Changes</button>
+    <div class="restart-note">Restart Homebridge to apply changes.</div>
+  </div>
+</div>
+
+<script>
+/* global homebridge */
+const iconColors = ['#0A84FF','#34C759','#AF52DE','#FF9F0A','#FF375F','#5AC8FA'];
+const speakerSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><circle cx="12" cy="15" r="3"/><circle cx="12" cy="6.5" r="1"/></svg>';
+const groupSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg>';
+
+let config = {};
+let liveDevices = []; // from host: {udn,name,model}
+
+const $ = (id) => document.getElementById(id);
+
+async function init() {
+  const configs = await homebridge.getPluginConfig();
+  config = configs[0] ?? { platform: 'Raumfeld', name: 'Raumfeld' };
+
+  $('autoDiscover').checked = config.autoDiscover !== false;
+  $('host').value = config.host ?? '';
+  $('airplayEnabled').checked = config.airplay?.enabled !== false;
+  $('bufferMs').value = config.airplay?.bufferMs ?? 220;
+  $('exposeGroups').checked = config.multiroom?.exposeGroups !== false;
+  $('syncGroupVolume').checked = config.multiroom?.syncGroupVolume !== false;
+
+  await refreshLive();
+  $('host').addEventListener('change', refreshLive);
+  $('autoDiscover').addEventListener('change', refreshLive);
+  $('save').addEventListener('click', save);
+}
+
+async function refreshLive() {
+  const host = $('host').value.trim();
+  $('hostSubtitle').textContent = 'v1.4.0 · host ' + (host || '—');
+  if (!host) { setPill(false, 'No host'); renderDevices([]); renderZones([]); return; }
+
+  setPill(null, 'Connecting…');
+  try {
+    const state = await homebridge.request('/zones', { host });
+    if (!state.connected) { setPill(false, 'Disconnected'); renderDevices([]); renderZones([]); return; }
+    setPill(true, 'Connected');
+    liveDevices = state.rooms;
+    renderDevices(state.rooms);
+    renderZones(state.zones);
+  } catch (e) {
+    setPill(false, 'Error');
+    homebridge.toast.error(String(e.message ?? e), 'Raumfeld');
+  }
+}
+
+function setPill(connected, text) {
+  const pill = $('statusPill');
+  $('statusText').textContent = text;
+  pill.classList.toggle('error', connected === false);
+  pill.classList.toggle('pulsing', connected === true);
+}
+
+function isExposed(udn) {
+  const entry = (config.devices ?? []).find((d) => d.udn === udn);
+  return entry ? entry.exposed !== false : true;
+}
+
+function renderDevices(rooms) {
+  const el = $('devices');
+  if (!rooms.length) { el.innerHTML = '<div class="empty">No speakers found on this host.</div>'; return; }
+  el.innerHTML = '';
+  rooms.forEach((room, i) => {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const color = iconColors[i % iconColors.length];
+    row.innerHTML =
+      '<span class="dev-icon" style="background:' + color + '">' + speakerSvg + '</span>' +
+      '<span class="grow"><span class="label">' + esc(room.name) + '</span>' +
+      '<span class="subtitle">' + esc(room.model) + '</span></span>' +
+      '<label class="switch"><input type="checkbox" data-udn="' + esc(room.udn) + '"' +
+      (isExposed(room.udn) ? ' checked' : '') + '><span class="track"></span><span class="knob"></span></label>';
+    el.appendChild(row);
+  });
+}
+
+function renderZones(zones) {
+  const el = $('zoneGroups');
+  if (!zones.length) { el.innerHTML = '<div class="empty">No active groups.</div>'; return; }
+  el.innerHTML = '';
+  zones.forEach((zone, i) => {
+    const row = document.createElement('div');
+    row.className = 'zone-row';
+    const color = iconColors[(i + 2) % iconColors.length];
+    const chips = zone.members.map((m) => '<span class="chip' + (i % 2 ? ' purple' : '') + '">' + esc(m) + '</span>').join('');
+    row.innerHTML =
+      '<span class="zone-icon" style="background:' + color + '">' + groupSvg + '</span>' +
+      '<span><span class="zone-name">' + esc(zone.name) + '</span>' +
+      '<div class="zone-master">Master: ' + esc(zone.leadRoom) + '</div>' +
+      '<div class="chips">' + chips + '</div></span>';
+    el.appendChild(row);
+  });
+}
+
+async function save() {
+  $('save').disabled = true;
+  try {
+    const devices = liveDevices.map((room) => ({
+      udn: room.udn,
+      name: room.name,
+      model: room.model,
+      exposed: document.querySelector('input[data-udn="' + cssEsc(room.udn) + '"]')?.checked !== false,
+    }));
+
+    config.platform = 'Raumfeld';
+    config.name = config.name ?? 'Raumfeld';
+    config.autoDiscover = $('autoDiscover').checked;
+    config.host = $('host').value.trim() || undefined;
+    config.airplay = { enabled: $('airplayEnabled').checked, bufferMs: Number($('bufferMs').value) };
+    config.multiroom = { exposeGroups: $('exposeGroups').checked, syncGroupVolume: $('syncGroupVolume').checked };
+    if (devices.length) config.devices = devices;
+
+    await homebridge.updatePluginConfig([config]);
+    await homebridge.savePluginConfig();
+    homebridge.toast.success('Saved. Restart Homebridge to apply.', 'Raumfeld');
+  } catch (e) {
+    homebridge.toast.error(String(e.message ?? e), 'Raumfeld');
+  } finally {
+    $('save').disabled = false;
+  }
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+function cssEsc(s) { return String(s ?? '').replace(/["\\]/g, '\\$&'); }
+
+homebridge.showSpinner();
+init().finally(() => homebridge.hideSpinner());
+</script>
+</body>
+</html>

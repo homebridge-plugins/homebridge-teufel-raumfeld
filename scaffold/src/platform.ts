@@ -10,7 +10,8 @@ import type {
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 import { ZoneAccessory } from './zoneAccessory.js';
-import { RaumfeldClient, type RaumfeldZone, type RaumfeldRoom } from './raumfeldClient.js';
+import { AirPlayBridge, type AirPlayTarget } from './airplayBridge.js';
+import { RaumfeldClient, type RaumfeldState, type RaumfeldRoom } from './raumfeldClient.js';
 
 export interface RaumfeldConfig extends PlatformConfig {
   autoDiscover?: boolean;
@@ -31,7 +32,7 @@ export interface RaumfeldConfig extends PlatformConfig {
  *  - An active group is exposed as ONE controllable accessory (the lead renderer).
  *  - Each member room's accessory is marked in-use / not independently controllable
  *    while its room is bound into an active group. Writes on a member are routed to
- *    the group (or no-op'd) and Home shows it as the greyed "in use" tile.
+ *    the group lead and Home shows it as the greyed "in use" tile.
  */
 export class RaumfeldPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -42,7 +43,9 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
   private readonly handlers = new Map<string, ZoneAccessory>();
 
   public client!: RaumfeldClient;
+  private airplay?: AirPlayBridge;
   private pollTimer?: NodeJS.Timeout;
+  private running = false;
 
   constructor(
     public readonly log: Logging,
@@ -56,7 +59,9 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
       this.bootstrap().catch((err) => this.log.error('Bootstrap failed:', err));
     });
     this.api.on('shutdown', () => {
+      this.running = false;
       if (this.pollTimer) clearInterval(this.pollTimer);
+      this.airplay?.stop();
       this.client?.dispose();
     });
   }
@@ -80,52 +85,130 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
     this.client = new RaumfeldClient(host, this.log);
     await this.client.connect();
 
-    // Initial sync, then poll (or subscribe to GENA events) for changes.
-    await this.sync();
-    const seconds = this.config.pollInterval ?? 2;
-    this.pollTimer = setInterval(() => {
-      this.sync().catch((err) => this.log.debug('Sync error:', err));
-    }, seconds * 1000);
+    this.airplay = new AirPlayBridge(this.log, this.client, {
+      enabled: this.config.airplay?.enabled !== false,
+      bufferMs: this.config.airplay?.bufferMs ?? 220,
+    });
+
+    this.running = true;
+
+    // Initial sync, then react to group changes. We prefer the host's long-poll
+    // (`updateId`) so groups made in the Raumfeld app show up instantly, and keep
+    // a slow interval as a safety net for missed events / volume drift.
+    await this.safeSync();
+    void this.longPollLoop();
+
+    // Safety-net poll (the long-poll above does the real-time work). Kept
+    // infrequent so we don't hammer the host; honours a larger pollInterval.
+    const safetyNetSeconds = Math.max(30, this.config.pollInterval ?? 2);
+    this.pollTimer = setInterval(() => void this.safeSync(), safetyNetSeconds * 1000);
+  }
+
+  /** Block on the host until a zone change lands, then resync — forever. */
+  private async longPollLoop(): Promise<void> {
+    while (this.running) {
+      await this.client.waitForChange();
+      if (!this.running) break;
+      await this.safeSync();
+    }
+  }
+
+  private async safeSync(): Promise<void> {
+    try {
+      await this.sync();
+    } catch (err) {
+      this.log.debug('Sync skipped:', (err as Error).message);
+    }
   }
 
   /**
    * Reconcile HomeKit accessories with the current rooms + zones on the host.
-   * TODO: implement the diff:
-   *   1. Fetch rooms and zones from the host.
-   *   2. For each exposed room -> ensure a room accessory exists.
-   *   3. For each active zone (group) -> ensure a group accessory exists (if exposeGroups).
-   *   4. Mark member rooms as in-use/locked; route their writes to the group lead.
-   *   5. Remove accessories for rooms/zones that no longer exist (unregister + drop cache).
+   *  1. Fetch rooms and zones (single round trip).
+   *  2. Ensure a room accessory for every exposed room; mark members that are
+   *     bound into a group as locked, and route their writes to the group lead.
+   *  3. Ensure a group accessory per active zone (if exposeGroups).
+   *  4. Prune accessories for rooms/zones that no longer exist or were hidden.
+   *  5. Refresh AirPlay receivers.
    */
   private async sync(): Promise<void> {
-    const rooms: RaumfeldRoom[] = await this.client.getRooms();
-    const zones: RaumfeldZone[] = await this.client.getZones();
+    const state: RaumfeldState = await this.client.getState();
+    const seen = new Set<string>();
+    const syncGroupVolume = this.config.multiroom?.syncGroupVolume !== false;
 
-    const grouped = new Set<string>();
-    for (const zone of zones) {
-      if (zone.rooms.length > 1) zone.rooms.forEach((r) => grouped.add(r.udn));
-    }
-
-    for (const room of rooms) {
-      if (this.isExposed(room) === false) continue;
-      const accessory = this.ensureAccessory(room.udn, room.name, room.model);
-      const handler = this.handlers.get(accessory.UUID)
-        ?? new ZoneAccessory(this, accessory);
-      this.handlers.set(accessory.UUID, handler);
-      handler.update({ room, lockedInGroup: grouped.has(room.udn) });
-    }
-
-    if (this.config.multiroom?.exposeGroups !== false) {
-      for (const zone of zones.filter((z) => z.rooms.length > 1)) {
-        const accessory = this.ensureAccessory(zone.udn, zone.name, 'Group');
-        const handler = this.handlers.get(accessory.UUID)
-          ?? new ZoneAccessory(this, accessory);
-        this.handlers.set(accessory.UUID, handler);
-        handler.update({ zone, lockedInGroup: false });
+    // room udn -> the group lead renderer it should be controlled through.
+    const groupLeadByRoom = new Map<string, string>();
+    for (const zone of state.zones) {
+      if (zone.rooms.length > 1) {
+        for (const room of zone.rooms) groupLeadByRoom.set(room.udn, zone.leadRendererUdn);
       }
     }
 
-    // TODO: prune accessories not seen in this sync pass.
+    // 2. Rooms.
+    for (const room of state.rooms) {
+      if (!this.isExposed(room)) continue;
+      const accessory = this.ensureAccessory(room.udn, room.name, room.model);
+      seen.add(accessory.UUID);
+      const lockedInGroup = groupLeadByRoom.has(room.udn);
+      this.handlerFor(accessory).update({
+        room,
+        lockedInGroup,
+        controlUdn: room.rendererUdn,
+        groupLeadUdn: groupLeadByRoom.get(room.udn),
+        syncGroupVolume,
+      });
+    }
+
+    // 3. Group accessories.
+    const airplayTargets: AirPlayTarget[] = [];
+    if (this.config.multiroom?.exposeGroups !== false) {
+      for (const zone of state.zones.filter((z) => z.rooms.length > 1)) {
+        const accessory = this.ensureAccessory(zone.udn, zone.name, 'Group');
+        seen.add(accessory.UUID);
+        const memberUdns = zone.rooms
+          .map((r) => r.rendererUdn)
+          .filter((udn) => udn !== zone.leadRendererUdn);
+        this.handlerFor(accessory).update({
+          zone,
+          lockedInGroup: false,
+          controlUdn: zone.leadRendererUdn,
+          memberUdns,
+          syncGroupVolume,
+        });
+        airplayTargets.push({ zoneId: zone.udn, name: zone.name, rendererUdn: zone.leadRendererUdn, memberUdns });
+      }
+    }
+
+    // Ungrouped, exposed rooms are AirPlay targets too.
+    for (const room of state.rooms) {
+      if (!this.isExposed(room) || groupLeadByRoom.has(room.udn)) continue;
+      airplayTargets.push({ zoneId: room.udn, name: room.name, rendererUdn: room.rendererUdn, memberUdns: [] });
+    }
+
+    // 4. Prune.
+    this.prune(seen);
+
+    // 5. AirPlay.
+    this.airplay?.syncTargets(airplayTargets);
+  }
+
+  /** Remove accessories not present in this sync pass (ungrouped/hidden/gone). */
+  private prune(seen: Set<string>): void {
+    for (const [uuid, accessory] of this.accessories) {
+      if (seen.has(uuid)) continue;
+      this.log.info('Removing accessory:', accessory.displayName);
+      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      this.accessories.delete(uuid);
+      this.handlers.delete(uuid);
+    }
+  }
+
+  private handlerFor(accessory: PlatformAccessory): ZoneAccessory {
+    let handler = this.handlers.get(accessory.UUID);
+    if (!handler) {
+      handler = new ZoneAccessory(this, accessory);
+      this.handlers.set(accessory.UUID, handler);
+    }
+    return handler;
   }
 
   private isExposed(room: RaumfeldRoom): boolean {
@@ -137,7 +220,10 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
   private ensureAccessory(id: string, name: string, model: string): PlatformAccessory {
     const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${id}`);
     const existing = this.accessories.get(uuid);
-    if (existing) return existing;
+    if (existing) {
+      existing.context.model = model;
+      return existing;
+    }
 
     this.log.info('Adding accessory:', name);
     const accessory = new this.api.platformAccessory(name, uuid);
