@@ -1,0 +1,19 @@
+{
+  "bridge": {
+    "name": "Raumfeld Dev",
+    "username": "0E:33:44:55:66:77",
+    "port": 51840,
+    "pin": "031-45-154"
+  },
+  "platforms": [
+    {
+      "platform": "Raumfeld",
+      "name": "Raumfeld",
+      "autoDiscover": false,
+      "host": "10.168.11.40",
+      "pollInterval": 5,
+      "airplay": { "enabled": true, "bufferMs": 220 },
+      "multiroom": { "exposeGroups": true, "syncGroupVolume": true }
+    }
+  ]
+}

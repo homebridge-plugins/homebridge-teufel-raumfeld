@@ -6,3 +6,9 @@ scaffold/dist/
 
 # dependencies
 scaffold/node_modules/
+
+# dev homebridge harness runtime state (keep only config.json)
+scaffold/test/hbConfig/accessories/
+scaffold/test/hbConfig/persist/
+scaffold/test/hbConfig/backups/
+scaffold/test/hbConfig/*.log
