@@ -22,7 +22,8 @@
   "files": [
     "dist",
     "config.schema.json",
-    "homebridge-ui"
+    "homebridge-ui",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "clean": "rimraf ./dist",

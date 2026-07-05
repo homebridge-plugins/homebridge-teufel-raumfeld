@@ -3,7 +3,7 @@
 Offline-installable tarball of the plugin. No npm-registry access needed.
 
 - **File:** `homebridge-raumfeld-0.1.0.tgz`
-- **SHA-256:** `27612fa210707afd3c6ff46cb4079c6ab66ba87f2a6e98d41fa38fba186e5c4c`
+- **SHA-256:** `c77fa78a46ae52e1454efc2e96d8222e3b625531fbc3886124b373bc1eb52011`
 - Bundles the built `dist/`, `config.schema.json`, and the custom Config UI (`homebridge-ui/`). Runtime deps (`@homebridge/plugin-ui-utils`, `fast-xml-parser`, `node-ssdp`) are pulled automatically on install.
 
 ## Install on the Homebridge host

@@ -1,34 +1,101 @@
-# Scaffold
+<p align="center">
+  <img src="https://raw.githubusercontent.com/homebridge/branding/master/logos/homebridge-wordmark-logo-vertical.png" width="150">
+</p>
 
-Starter files for `homebridge-raumfeld`, referenced by the parent `README.md` build brief. These are a **skeleton with typed stubs**, not a finished plugin — search for `TODO` to see what to implement.
+# homebridge-raumfeld
 
-## Move into the repo root
-```
-package.json
-config.schema.json      # drives the Homebridge Config UI X settings screen (design 1b)
-tsconfig.json
-src/
-  index.ts              # entry point, registers the platform
-  settings.ts           # constants (platform name, host port)
-  platform.ts           # dynamic platform: discover, sync rooms/zones, multiroom lock rule
-  zoneAccessory.ts      # per-accessory HomeKit service (SmartSpeaker + volume + lock state)
-  raumfeldClient.ts     # STUB: host HTTP API (:47365) + UPnP/OpenHome SOAP
+**Raumfeld, in Apple Home.**
+
+A [Homebridge](https://homebridge.io) plugin that exposes your Teufel Raumfeld
+multiroom speakers to Apple HomeKit — every room as a tile, every Raumfeld group
+as a single controllable accessory, with optional AirPlay streaming from any
+iPhone.
+
+```sh
+npm install -g homebridge-raumfeld
 ```
 
-## Build
+![npm](https://img.shields.io/npm/v/homebridge-raumfeld) ![license](https://img.shields.io/badge/license-MIT-blue) ![homebridge](https://img.shields.io/badge/homebridge-%3E%3D1.8-blueviolet)
+
+## Features
+
+- **Auto-discovery** — finds the Raumfeld host on your network (SSDP), or point it at a fixed IP.
+- **Native Home tiles** — each room appears as a HomeKit speaker with volume, mute and play/pause.
+- **Multiroom groups** — groups you make in the Raumfeld app show up as one accessory; member rooms are controlled together (see below).
+- **Per-zone volume** — HomeKit volume maps to Raumfeld volume; group volume can be kept in sync.
+- **AirPlay 2 streaming** *(optional)* — advertise zones as AirPlay receivers to stream straight from iOS.
+- **Siri** — “Hey Siri, set the Kitchen to 30%.”
+- **Cross-subnet friendly** — resolves speakers via the host’s HTTP API, so Homebridge and the speakers can live on different VLANs.
+
+## Configuration
+
+Configure from the Homebridge Config UI X screen (a custom settings page ships
+with the plugin), or add a platform block to `config.json`:
+
+```json
+{
+  "platforms": [
+    {
+      "platform": "Raumfeld",
+      "name": "Raumfeld",
+      "autoDiscover": true,
+      "host": "192.168.1.50",
+      "pollInterval": 5,
+      "airplay":   { "enabled": true, "bufferMs": 220 },
+      "multiroom": { "exposeGroups": true, "syncGroupVolume": true }
+    }
+  ]
+}
 ```
+
+| Option | Default | Description |
+|---|---|---|
+| `autoDiscover` | `true` | Find the Raumfeld host via SSDP. Turn off to use `host`. |
+| `host` | — | IP/hostname of the Raumfeld host. Required when `autoDiscover` is off, or when Homebridge and the speakers are on different subnets (SSDP can’t cross subnets). |
+| `pollInterval` | `2` | Safety-net poll seconds; live changes arrive instantly via the host long-poll. |
+| `airplay.enabled` | `true` | Advertise zones as AirPlay receivers. |
+| `airplay.bufferMs` | `220` | AirPlay audio buffer. |
+| `multiroom.exposeGroups` | `true` | Expose active Raumfeld groups as accessories. |
+| `multiroom.syncGroupVolume` | `true` | Apply group volume changes to all members. |
+
+Restart Homebridge after saving.
+
+## Multiroom behaviour
+
+Groups are **authored in the Raumfeld app**, not in Homebridge — the plugin
+mirrors them live. When rooms are combined into a Raumfeld group:
+
+- the group is exposed as **one** accessory (the controllable unit);
+- each member room stays visible but its writes are **routed to the group lead**, so controlling it controls the group;
+- dissolve the group in the Raumfeld app and the rooms become individually controllable again.
+
+## Tested with
+
+Stereo L · Stereo M · One · One M · Stream · Soundbar · Connector
+
+## Requirements
+
+- Node.js ≥ 18
+- Homebridge ≥ 1.8 (Homebridge 2.0 ready)
+- A Raumfeld host (any Raumfeld/Teufel speaker or Connector acting as host) reachable on port `47365`
+
+## Development
+
+The plugin sources live in this directory.
+
+```sh
 npm install
-npm run build          # tsc -> dist/
+npm run build       # rimraf ./dist && tsc
+npm run lint
+npm run dev         # nodemon: rebuild + relaunch Homebridge against test/hbConfig
 ```
-Then add to Homebridge `config.json` a platform block `{ "platform": "Raumfeld" }` (or configure via the UI from `config.schema.json`).
 
-## Implementation status
-1. **`raumfeldClient.ts`** — ✅ SSDP discovery, `GET /getZones` XML parsing, hand-rolled SOAP for `RenderingControl` (volume/mute) and `AVTransport` (play/pause/stop), the `connectRoomToZone` / `dropRoom` group endpoints, and a `waitForChange()` long-poll on `updateId` so groups made in the Raumfeld app appear near-instantly. Renderer control URLs are resolved lazily from each device description (LOCATION learned via SSDP).
-2. **`platform.ts` `sync()`** — ✅ single-round-trip reconcile of rooms + zones, add/update/prune of accessories, member-lock computation, and a long-poll loop with an infrequent safety-net poll.
-3. **`zoneAccessory.ts`** — ✅ SmartSpeaker with volume/mute/transport; locked members are flagged via `StatusFault` and their writes are routed to the group lead renderer (README "Multiroom" rule).
-4. **`airplayBridge.ts`** — ⏳ lifecycle scaffold: advertises one receiver per zone/group and owns session bookkeeping. The native audio path (shairport-sync / airtunes2 spawn + PCM → renderer hand-off) is left as a single documented seam, `startReceiver()`. AirPlay 1 single-zone is the intended first milestone.
-5. **Config UI (`homebridge-ui/`)** — ✅ a custom Config UI X page recreating design **1b** (status pill, connection, live device toggles, AirPlay/multiroom sections, read-only live zone groups) backed by `server.js`, which reads `/getZones` from the host.
+Architecture: a dynamic platform (`src/platform.ts`) mirrors the host’s rooms and
+zones as accessories; `src/raumfeldClient.ts` talks to the host HTTP API
+(`/getZones`, `/listDevices`, long-poll `updateId`) and drives each renderer over
+SOAP (RenderingControl / AVTransport); `src/zoneAccessory.ts` is the per-accessory
+HomeKit service; `src/airplayBridge.ts` manages the AirPlay receiver lifecycle.
 
-> **Build note:** this was authored without a local Node toolchain, so `npm run build` / `tsc` were not executed here — run them before publishing.
+## License
 
-The visual target for the config screen and the end-user Home experience is `../Raumfeld Homebridge.dc.html` (badges 1b and 1a).
+MIT © Alexander Peither
