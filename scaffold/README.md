@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/homebridge/branding/master/logos/homebridge-wordmark-logo-vertical.png" width="150">
 </p>
 
-# homebridge-raumfeld
+# homebridge-teufel-raumfeld
 
 **Raumfeld, in Apple Home.**
 
@@ -12,10 +12,10 @@ as a single controllable accessory, with optional AirPlay streaming from any
 iPhone.
 
 ```sh
-npm install -g homebridge-raumfeld
+npm install -g homebridge-teufel-raumfeld
 ```
 
-![npm](https://img.shields.io/npm/v/homebridge-raumfeld) ![license](https://img.shields.io/badge/license-MIT-blue) ![homebridge](https://img.shields.io/badge/homebridge-%3E%3D1.8-blueviolet)
+![npm](https://img.shields.io/npm/v/homebridge-teufel-raumfeld) ![license](https://img.shields.io/badge/license-MIT-blue) ![homebridge](https://img.shields.io/badge/homebridge-%3E%3D1.8-blueviolet)
 
 ## Features
 
