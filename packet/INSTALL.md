@@ -8,7 +8,7 @@ Offline-installable tarball of the plugin. No npm-registry access needed.
 
 ## Install on the Homebridge host
 
-Copy the `.tgz` to the machine that runs Homebridge (e.g. `10.168.10.66`), then:
+Copy the `.tgz` to the machine that runs Homebridge (e.g. `192.168.1.10`), then:
 
 ```bash
 # global install (standard Homebridge)
@@ -35,7 +35,7 @@ or edit `config.json` directly:
     "platform": "Raumfeld",
     "name": "Raumfeld",
     "autoDiscover": false,
-    "host": "10.168.11.40",
+    "host": "192.168.1.50",
     "pollInterval": 5,
     "airplay":   { "enabled": true, "bufferMs": 220 },
     "multiroom": { "exposeGroups": true, "syncGroupVolume": true }
