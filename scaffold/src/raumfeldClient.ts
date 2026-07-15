@@ -110,6 +110,7 @@ export class RaumfeldClient {
   private static async probe(address: string): Promise<boolean> {
     try {
       const res = await fetchWithTimeout(`http://${address}:${RAUMFELD_HTTP_PORT}/getZones`, {}, 2000);
+      void res.body?.cancel(); // probe only needs the status; release the socket
       return res.ok;
     } catch {
       return false;
@@ -123,13 +124,15 @@ export class RaumfeldClient {
   async connect(): Promise<void> {
     this.log.info(`Connecting to Raumfeld host at ${this.baseUrl}`);
     const res = await fetchWithTimeout(`${this.baseUrl}/getZones`, {}, 4000);
+    await res.text().catch(() => undefined); // consume body so the socket can be reused
     if (!res.ok) throw new Error(`Host returned HTTP ${res.status} for /getZones`);
     // Learn every device's description URL from the host over HTTP. Unlike SSDP
     // this works across subnets (Homebridge and the speakers on different VLANs),
     // and includes the per-zone virtual renderers used for group control.
     await this.refreshDeviceLocations();
     this.locationTimer = setInterval(() => {
-      this.refreshDeviceLocations().catch(() => undefined);
+      this.refreshDeviceLocations().catch((err) =>
+        this.log.debug(`Device-location refresh failed: ${(err as Error).message}`));
     }, 60000);
     this.locationTimer.unref?.();
   }
@@ -146,15 +149,20 @@ export class RaumfeldClient {
    * server's poll window elapses. Callers loop on this to react instantly
    * without hammering the host with fixed polling.
    */
-  async waitForChange(timeoutMs = 30000): Promise<void> {
+  async waitForChange(timeoutMs = 30000): Promise<boolean> {
     const url = this.lastUpdateId
       ? `${this.baseUrl}/getZones?updateId=${encodeURIComponent(this.lastUpdateId)}`
       : `${this.baseUrl}/getZones`;
     try {
       const res = await fetchWithTimeout(url, {}, timeoutMs);
+      // Always drain the body so the connection can be reused, even on non-2xx.
+      await res.text().catch(() => undefined);
+      if (!res.ok) return false;
       this.captureUpdateId(res);
+      return true;
     } catch {
-      // Timeout / transient network error — caller will retry.
+      // Timeout / transient network error — caller backs off and retries.
+      return false;
     }
   }
 
@@ -171,7 +179,10 @@ export class RaumfeldClient {
   /** Single round-trip snapshot of rooms + zones. */
   async getState(): Promise<RaumfeldState> {
     const res = await fetchWithTimeout(`${this.baseUrl}/getZones`, {}, 6000);
-    if (!res.ok) throw new Error(`/getZones -> HTTP ${res.status}`);
+    if (!res.ok) {
+      void res.body?.cancel();
+      throw new Error(`/getZones -> HTTP ${res.status}`);
+    }
     this.captureUpdateId(res);
     const state = this.parseZoneConfig(await res.text());
     await this.enrich(state);
@@ -188,32 +199,40 @@ export class RaumfeldClient {
     const action = targetMediaState === 0 ? 'Play' : targetMediaState === 1 ? 'Pause' : 'Stop';
     const args: Record<string, string | number> = { InstanceID: 0 };
     if (action === 'Play') args.Speed = '1';
-    await this.soap(rendererUdn, 'avTransport', action, args);
+    await this.soapRequired(rendererUdn, 'avTransport', action, args);
   }
 
   /**
    * Set volume (0-100). For a group pass the member renderer udns in `alsoUdns`
-   * so each speaker tracks the group volume (config: syncGroupVolume).
+   * so each speaker tracks the group volume (config: syncGroupVolume). Every
+   * target is attempted; failures are aggregated so one dead member doesn't
+   * leave the rest unsynchronised.
    */
   async setVolume(rendererUdn: string, volume: number, alsoUdns: string[] = []): Promise<void> {
     const clamped = Math.max(0, Math.min(100, Math.round(volume)));
-    for (const udn of [rendererUdn, ...alsoUdns]) {
-      await this.soap(udn, 'rendering', 'SetVolume', {
+    await this.fanOut([rendererUdn, ...alsoUdns], 'SetVolume', (udn) =>
+      this.soapRequired(udn, 'rendering', 'SetVolume', {
         InstanceID: 0,
         Channel: 'Master',
         DesiredVolume: clamped,
-      });
-    }
+      }));
   }
 
   async setMute(rendererUdn: string, mute: boolean, alsoUdns: string[] = []): Promise<void> {
-    for (const udn of [rendererUdn, ...alsoUdns]) {
-      await this.soap(udn, 'rendering', 'SetMute', {
+    await this.fanOut([rendererUdn, ...alsoUdns], 'SetMute', (udn) =>
+      this.soapRequired(udn, 'rendering', 'SetMute', {
         InstanceID: 0,
         Channel: 'Master',
         DesiredMute: mute ? 1 : 0,
-      });
-    }
+      }));
+  }
+
+  /** Run a write against every renderer; aggregate failures instead of stopping at the first. */
+  private async fanOut(udns: string[], action: string, op: (udn: string) => Promise<unknown>): Promise<void> {
+    const results = await Promise.allSettled(udns.map(op));
+    const failures = results.flatMap((r, i) =>
+      r.status === 'rejected' ? [`${udns[i]}: ${(r.reason as Error).message}`] : []);
+    if (failures.length) throw new Error(`${action} failed for ${failures.length}/${udns.length}: ${failures.join('; ')}`);
   }
 
   // --- Group management (authored in the Raumfeld app; mutated rarely here) ---
@@ -222,12 +241,14 @@ export class RaumfeldClient {
     const url = `${this.baseUrl}/connectRoomToZone?roomUDN=${encodeURIComponent(roomUdn)}`
       + `&zoneUDN=${encodeURIComponent(zoneUdn)}`;
     const res = await fetchWithTimeout(url, {}, 5000);
+    void res.body?.cancel(); // no body needed; release the socket
     if (!res.ok) throw new Error(`connectRoomToZone -> HTTP ${res.status}`);
   }
 
   async dropRoom(roomUdn: string): Promise<void> {
     const url = `${this.baseUrl}/dropRoom?roomUDN=${encodeURIComponent(roomUdn)}`;
     const res = await fetchWithTimeout(url, {}, 5000);
+    void res.body?.cancel(); // no body needed; release the socket
     if (!res.ok) throw new Error(`dropRoom -> HTTP ${res.status}`);
   }
 
@@ -251,7 +272,13 @@ export class RaumfeldClient {
    */
   private parseZoneConfig(xml: string): RaumfeldState {
     const doc = this.parser.parse(xml);
-    const cfg = doc.zoneConfig ?? {};
+    const cfg = doc.zoneConfig;
+    // A 200 with an unexpected body (captive portal, wrong host, firmware quirk)
+    // must NOT parse to an empty snapshot — that would prune every accessory.
+    // Throw so the caller (safeSync) skips this pass and keeps the last good state.
+    if (!cfg || typeof cfg !== 'object') {
+      throw new Error('Unexpected /getZones payload: missing <zoneConfig> root');
+    }
     const rooms: RaumfeldRoom[] = [];
     const zones: RaumfeldZone[] = [];
 
@@ -310,6 +337,8 @@ export class RaumfeldClient {
             room.volume = vol.volume;
             room.mute = vol.mute;
           }
+          const playing = await this.queryTransportState(room.rendererUdn);
+          if (playing !== undefined) room.playing = playing;
         } catch (err) {
           this.log.debug(`enrich(${room.name}) skipped: ${(err as Error).message}`);
         }
@@ -334,6 +363,15 @@ export class RaumfeldClient {
     return { volume, mute };
   }
 
+  /** Current AVTransport play state -> true when PLAYING/TRANSITIONING, else false. */
+  private async queryTransportState(rendererUdn: string): Promise<boolean | undefined> {
+    const xml = await this.soap(rendererUdn, 'avTransport', 'GetTransportInfo', { InstanceID: 0 });
+    if (!xml) return undefined;
+    const state = extractTag(xml, 'CurrentTransportState');
+    if (!state) return undefined;
+    return state === 'PLAYING' || state === 'TRANSITIONING';
+  }
+
   /**
    * Refresh the udn -> description-URL map from the host's /listDevices. This
    * enumerates every speaker, connector and per-zone virtual renderer with an
@@ -342,12 +380,19 @@ export class RaumfeldClient {
   private async refreshDeviceLocations(): Promise<void> {
     if (this.disposed) return;
     const res = await fetchWithTimeout(`${this.baseUrl}/listDevices`, {}, 5000);
-    if (!res.ok) return;
+    if (!res.ok) {
+      void res.body?.cancel();
+      return;
+    }
     const doc = this.parser.parse(await res.text());
     for (const dev of asArray(doc.devices?.device)) {
       const udn = attr(dev, 'udn');
       const location = attr(dev, 'location');
-      if (udn && location) this.locations.set(udn, location);
+      if (!udn || !location) continue;
+      // A renderer that moved (new IP/description URL) must drop its memoised
+      // control endpoints, otherwise writes keep hitting the stale address.
+      if (this.locations.get(udn) !== location) this.renderers.delete(udn);
+      this.locations.set(udn, location);
     }
   }
 
@@ -362,11 +407,18 @@ export class RaumfeldClient {
     if (!location) return undefined;
 
     const res = await fetchWithTimeout(location, {}, 4000);
-    if (!res.ok) return undefined;
+    if (!res.ok) {
+      void res.body?.cancel();
+      return undefined;
+    }
     const doc = this.parser.parse(await res.text());
     const device = doc.root?.device ?? doc.device;
-    const base = new URL(location);
-    const baseUrl = `${base.protocol}//${base.host}`;
+    // Relative controlURLs resolve against <URLBase> when the description
+    // provides one, else against the description's own URL (which carries the
+    // correct path) — NOT the bare origin, which drops any base path.
+    const urlBase = firstDefined(doc.root?.URLBase, doc.URLBase) as string | undefined;
+    const resolveBase = urlBase ? new URL(urlBase).toString() : location;
+    const baseUrl = urlBase ? new URL(urlBase).origin : new URL(location).origin;
 
     const resolved: ResolvedRenderer = {
       location,
@@ -377,7 +429,7 @@ export class RaumfeldClient {
       const type = String(svc.serviceType ?? '');
       const controlUrl = String(svc.controlURL ?? '');
       if (!controlUrl) continue;
-      const abs = new URL(controlUrl, baseUrl).toString();
+      const abs = new URL(controlUrl, resolveBase).toString();
       if (type === SOAP_SERVICE.rendering) resolved.renderingControlUrl = abs;
       if (type === SOAP_SERVICE.avTransport) resolved.avTransportUrl = abs;
     }
@@ -413,8 +465,32 @@ export class RaumfeldClient {
       },
       5000,
     );
-    if (!res.ok) throw new Error(`SOAP ${action} -> HTTP ${res.status}`);
+    if (!res.ok) {
+      void res.body?.cancel();
+      throw new Error(`SOAP ${action} -> HTTP ${res.status}`);
+    }
     return res.text();
+  }
+
+  /**
+   * Like {@link soap} but for control actions: a missing endpoint is a hard
+   * failure, not a silent no-op. Callers surface the error to HomeKit so a
+   * write that couldn't be delivered isn't reported as success.
+   */
+  private async soapRequired(
+    rendererUdn: string,
+    service: keyof typeof SOAP_SERVICE,
+    action: string,
+    args: Record<string, string | number>,
+  ): Promise<string> {
+    const resolved = await this.resolveRenderer(rendererUdn);
+    const controlUrl = service === 'rendering' ? resolved?.renderingControlUrl : resolved?.avTransportUrl;
+    if (!controlUrl) {
+      throw new Error(`No ${service} endpoint for ${rendererUdn}; cannot ${action}`);
+    }
+    const body = await this.soap(rendererUdn, service, action, args);
+    if (body === undefined) throw new Error(`${service} ${action} for ${rendererUdn} was not delivered`);
+    return body;
   }
 }
 
@@ -426,12 +502,30 @@ async function fetchWithTimeout(
   timeoutMs: number,
 ): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Phase 1: bound the header exchange. Always cleared once fetch settles, so a
+  // caller that never touches the body leaves no armed timer behind.
+  const headerTimer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    res = await fetch(url, { ...init, signal: controller.signal });
   } finally {
-    clearTimeout(timer);
+    clearTimeout(headerTimer);
   }
+  // Phase 2: fetch resolves on headers, so a stalled body could still hang. Bound
+  // each body read with its own timer on the same controller, cleared on settle.
+  const wrap = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) =>
+    async (...a: A): Promise<R> => {
+      const bodyTimer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fn(...a);
+      } finally {
+        clearTimeout(bodyTimer);
+      }
+    };
+  res.text = wrap(res.text.bind(res));
+  res.json = wrap(res.json.bind(res));
+  res.arrayBuffer = wrap(res.arrayBuffer.bind(res));
+  return res;
 }
 
 function buildSoapEnvelope(serviceType: string, action: string, args: Record<string, string | number>): string {
@@ -454,9 +548,15 @@ function escapeXml(value: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Pull a SOAP scalar out by local name, tolerating a namespace prefix and
+ * attributes on the tag (e.g. `<u:CurrentVolume ...>`, `<CurrentVolume>`).
+ * The previous prefix-blind `<tag>` match silently read prefixed values as
+ * empty, which HomeKit then saw as volume 0 / not muted / paused.
+ */
 function extractTag(xml: string, tag: string): string | undefined {
-  const m = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml);
-  return m?.[1];
+  const m = new RegExp(`<(?:[\\w.-]+:)?${tag}\\b[^>]*>([\\s\\S]*?)</(?:[\\w.-]+:)?${tag}>`).exec(xml);
+  return m?.[1]?.trim();
 }
 
 /** fast-xml-parser gives a single object for one child and an array for many. */

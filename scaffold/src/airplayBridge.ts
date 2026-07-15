@@ -37,6 +37,8 @@ interface Session {
  */
 export class AirPlayBridge {
   private readonly sessions = new Map<string, Session>();
+  /** Warn once, not per zone, that the native receiver isn't wired in this build. */
+  private warnedUnavailable = false;
 
   constructor(
     private readonly log: Logging,
@@ -92,14 +94,24 @@ export class AirPlayBridge {
    */
   private startReceiver(session: Session): void {
     const { name, rendererUdn, memberUdns } = session.target;
-    this.log.info(
-      `AirPlay: advertising "${name}" -> renderer ${rendererUdn}`
+    // The native receiver (shairport-sync / airtunes2) is not spawned in this
+    // build. Do NOT flip `active`: an advertised-but-nonexistent receiver would
+    // show up in the iOS picker and silently fail on selection. Report the
+    // feature as unavailable (once) and leave the session inactive until the
+    // process launch is wired into this seam.
+    if (!this.warnedUnavailable) {
+      this.warnedUnavailable = true;
+      this.log.warn(
+        'AirPlay: native receiver not built into this release; zones will NOT appear as '
+        + 'AirPlay targets. Set airplay.enabled=false to silence this.',
+      );
+    }
+    this.log.debug(
+      `AirPlay: would advertise "${name}" -> renderer ${rendererUdn}`
       + (memberUdns.length ? ` (+${memberUdns.length} synced)` : '')
-      + `, buffer ${this.options.bufferMs} ms.`,
+      + `, buffer ${this.options.bufferMs} ms (receiver not wired).`,
     );
-    // NOTE: native receiver not spawned in this build — the lifecycle is wired
-    // and ready; drop the shairport-sync/airtunes2 process launch in here.
-    session.active = true;
+    session.active = false;
     void this.client; // referenced here once the receiver hands PCM to the renderer.
   }
 

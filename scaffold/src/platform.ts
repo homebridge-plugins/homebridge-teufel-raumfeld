@@ -8,6 +8,8 @@ import type {
   Service,
 } from 'homebridge';
 
+import { setTimeout as delay } from 'node:timers/promises';
+
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 import { ZoneAccessory } from './zoneAccessory.js';
 import { AirPlayBridge, type AirPlayTarget } from './airplayBridge.js';
@@ -46,6 +48,9 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
   private airplay?: AirPlayBridge;
   private pollTimer?: NodeJS.Timeout;
   private running = false;
+  private shuttingDown = false;
+  /** Serialises sync passes so an old snapshot can't prune/overwrite a newer one. */
+  private syncChain: Promise<void> = Promise.resolve();
 
   constructor(
     public readonly log: Logging,
@@ -59,6 +64,7 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
       this.bootstrap().catch((err) => this.log.error('Bootstrap failed:', err));
     });
     this.api.on('shutdown', () => {
+      this.shuttingDown = true;
       this.running = false;
       if (this.pollTimer) clearInterval(this.pollTimer);
       this.airplay?.stop();
@@ -76,6 +82,7 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
     const host = this.config.autoDiscover !== false
       ? await RaumfeldClient.discover(this.log)
       : this.config.host;
+    if (this.shuttingDown) return;
 
     if (!host) {
       this.log.error('No Raumfeld host found. Enable auto-discover or set "host" in config.');
@@ -84,6 +91,12 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
 
     this.client = new RaumfeldClient(host, this.log);
     await this.client.connect();
+    // Homebridge may have fired 'shutdown' while discovery/connect was awaiting.
+    // Don't resurrect the platform with fresh timers in that case.
+    if (this.shuttingDown) {
+      this.client.dispose();
+      return;
+    }
 
     this.airplay = new AirPlayBridge(this.log, this.client, {
       enabled: this.config.airplay?.enabled !== false,
@@ -106,19 +119,33 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
 
   /** Block on the host until a zone change lands, then resync — forever. */
   private async longPollLoop(): Promise<void> {
+    let backoffMs = 0;
     while (this.running) {
-      await this.client.waitForChange();
+      const ok = await this.client.waitForChange();
       if (!this.running) break;
-      await this.safeSync();
+      if (ok) {
+        backoffMs = 0;
+        await this.safeSync();
+        continue;
+      }
+      // Host unreachable / long-poll errored: back off (capped) so we don't spin
+      // in a tight retry loop hammering a dead host.
+      backoffMs = Math.min(backoffMs ? backoffMs * 2 : 1000, 30000);
+      this.log.debug(`Long-poll failed; retrying in ${backoffMs} ms.`);
+      await delay(backoffMs);
     }
   }
 
+  /**
+   * Run a sync pass, serialised behind any in-flight one. Chaining prevents an
+   * older snapshot (e.g. the safety-net interval) from pruning or overwriting
+   * accessories after a newer long-poll snapshot already applied.
+   */
   private async safeSync(): Promise<void> {
-    try {
-      await this.sync();
-    } catch (err) {
+    this.syncChain = this.syncChain.then(() => this.sync()).catch((err) => {
       this.log.debug('Sync skipped:', (err as Error).message);
-    }
+    });
+    return this.syncChain;
   }
 
   /**

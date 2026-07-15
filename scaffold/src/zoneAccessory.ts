@@ -77,13 +77,18 @@ export class ZoneAccessory {
     this.groupLeadUdn = state.groupLeadUdn;
     this.syncGroupVolume = state.syncGroupVolume ?? true;
 
-    this.setChar(Characteristic.Volume, src.volume ?? 0);
-    this.setChar(Characteristic.Mute, src.mute ?? false);
-    this.setChar(
-      Characteristic.CurrentMediaState,
-      src.playing ? Characteristic.CurrentMediaState.PLAY : Characteristic.CurrentMediaState.PAUSE,
-    );
-    this.setChar(Characteristic.ConfiguredName, src.name);
+    // Only push characteristics the host actually reported. A failed/skipped
+    // enrich leaves volume/mute/playing undefined; writing 0/false/paused here
+    // would clobber the last-known HomeKit state with bogus values.
+    if (src.volume !== undefined) this.setChar(Characteristic.Volume, src.volume);
+    if (src.mute !== undefined) this.setChar(Characteristic.Mute, src.mute);
+    if (src.playing !== undefined) {
+      this.setChar(
+        Characteristic.CurrentMediaState,
+        src.playing ? Characteristic.CurrentMediaState.PLAY : Characteristic.CurrentMediaState.PAUSE,
+      );
+    }
+    if (src.name) this.setChar(Characteristic.ConfiguredName, src.name);
 
     // The "in use" lock is enforced by routing member writes to the group lead
     // (see writeTarget()). We deliberately do NOT surface it via StatusFault:
