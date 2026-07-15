@@ -293,7 +293,7 @@ export class RaumfeldClient {
       const zoneUdn = attr(zoneNode, 'udn') ?? lead.udn;
       zones.push({
         udn: zoneUdn,
-        name: zoneRooms.map((r) => r.name).join(' + '),
+        name: sanitizeHapName(zoneRooms.map((r) => r.name).join(' + ')),
         leadRoomUdn: lead.udn,
         leadRendererUdn: zoneUdn,
         rooms: zoneRooms,
@@ -316,7 +316,7 @@ export class RaumfeldClient {
     return {
       udn,
       rendererUdn,
-      name: attr(node, 'name') ?? 'Speaker',
+      name: sanitizeHapName(attr(node, 'name') ?? 'Speaker'),
       // Model isn't in /getZones; filled in by enrich() from the device description.
       model: this.renderers.get(rendererUdn)?.modelName ?? 'Speaker',
     };
@@ -572,6 +572,28 @@ function attr(node: unknown, name: string): string | undefined {
 
 function firstDefined(...values: unknown[]): unknown {
   return values.find((v) => v !== undefined && v !== null && v !== '');
+}
+
+/**
+ * HomeKit's Name/ConfiguredName characteristics reject anything that isn't a
+ * letter, number, space, apostrophe, or common punctuation, and the string must
+ * start and end with a letter or number. Room names come straight from the host
+ * and zone names are joined with " + ", so an invalid character (e.g. the "+"
+ * separator) makes HAP-NodeJS warn and can stop the accessory being added in the
+ * Home app. Coerce to a valid form: spell out "&"/"+" as "and", drop unsupported
+ * characters, collapse whitespace, and trim non-alphanumeric edges.
+ */
+function sanitizeHapName(raw: string): string {
+  const cleaned = raw
+    .replace(/[&+]/g, ' and ')
+    // Keep Unicode letters/numbers (covers umlauts like "Küche") plus the
+    // punctuation HAP accepts; everything else (emoji, symbols) is dropped.
+    .replace(/[^\p{L}\p{N} .,'()-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .replace(/[^\p{L}\p{N}]+$/u, '')
+    .trim();
+  return cleaned || 'Speaker';
 }
 
 /** Flatten a UPnP device tree (device + embedded deviceList) into its services. */
