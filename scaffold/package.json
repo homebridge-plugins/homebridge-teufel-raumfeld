@@ -1,7 +1,7 @@
 {
   "displayName": "Homebridge Teufel Raumfeld",
   "name": "homebridge-teufel-raumfeld",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Control Teufel Raumfeld multiroom speakers from Apple HomeKit, with AirPlay streaming from iOS.",
   "license": "MIT",
   "author": "Alexander Peither",

@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-07-15
+
+### Fixed
+- Sanitize room and zone names before they reach HomeKit so HAP-NodeJS no longer
+  rejects them. Zone names were joined with `+` (e.g. `Bad + Küche`), an
+  unsupported character that triggered an "invalid 'Name' characteristic" warning
+  and could stop the accessory being added in the Home app. `&`/`+` are now
+  spelled out as "and", unsupported symbols/emoji are dropped, and the name is
+  trimmed to start and end with a letter or number (Unicode letters like umlauts
+  are preserved).
+
 ## [0.1.1] - 2026-07-15
 
 ### Fixed
