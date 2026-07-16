@@ -48,6 +48,27 @@ const SOAP_SERVICE = {
   avTransport: 'urn:schemas-upnp-org:service:AVTransport:1',
 } as const;
 
+/** A UPnP SOAP fault (HTTP 500 + optional <errorCode>). */
+export class SoapFault extends Error {
+  constructor(
+    readonly action: string,
+    readonly httpStatus: number,
+    readonly upnpCode?: number,
+  ) {
+    super(`SOAP ${action} -> HTTP ${httpStatus}${upnpCode !== undefined ? ` (UPnP ${upnpCode})` : ''}`);
+    this.name = 'SoapFault';
+  }
+
+  /**
+   * True when the fault means "can't transition right now" rather than a broken
+   * transport — chiefly 701 (transition not available), i.e. Play issued with
+   * nothing queued. Callers can treat this as a benign no-op.
+   */
+  get isTransitionUnavailable(): boolean {
+    return this.upnpCode === 701;
+  }
+}
+
 /**
  * Thin client for the Raumfeld host.
  *
@@ -244,7 +265,18 @@ export class RaumfeldClient {
     const action = targetMediaState === 0 ? 'Play' : targetMediaState === 1 ? 'Pause' : 'Stop';
     const args: Record<string, string | number> = { InstanceID: 0 };
     if (action === 'Play') args.Speed = '1';
-    await this.soapRequired(rendererUdn, 'avTransport', action, args);
+    try {
+      await this.soapRequired(rendererUdn, 'avTransport', action, args);
+    } catch (err) {
+      // Play with nothing queued (no radio/AirPlay/stream loaded) faults with
+      // UPnP 701. Nothing to start, so treat it as a no-op rather than an error —
+      // the poll loop will revert the HomeKit toggle to off.
+      if (action === 'Play' && err instanceof SoapFault && err.isTransitionUnavailable) {
+        this.log.info(`${rendererUdn}: Play ignored — nothing is queued on this zone.`);
+        return;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -526,8 +558,13 @@ export class RaumfeldClient {
       5000,
     );
     if (!res.ok) {
-      void res.body?.cancel();
-      throw new Error(`SOAP ${action} -> HTTP ${res.status}`);
+      // UPnP faults come back as HTTP 500 with a SOAP body carrying an
+      // <errorCode>. Surface it so callers can tell "can't do that right now"
+      // (e.g. 701 transition-not-available: Play with nothing queued) from a
+      // genuine transport failure.
+      const faultBody = await res.text().catch(() => '');
+      const errorCode = Number(extractTag(faultBody, 'errorCode'));
+      throw new SoapFault(action, res.status, Number.isFinite(errorCode) ? errorCode : undefined);
     }
     return res.text();
   }

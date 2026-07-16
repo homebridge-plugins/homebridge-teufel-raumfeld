@@ -57,15 +57,32 @@ export class ZoneAccessory {
 
     // On = play / pause. TargetMediaState enum: 0 PLAY, 1 PAUSE.
     this.speaker.getCharacteristic(Characteristic.On)
-      .onSet(async (value) => {
-        await this.platform.client.setPlayState(this.writeTarget(), value ? 0 : 1);
-      });
+      .onSet(this.wrapWrite('play/pause', (value) =>
+        this.platform.client.setPlayState(this.writeTarget(), value ? 0 : 1)));
 
     // RotationSpeed (0-100) = volume.
     this.speaker.getCharacteristic(Characteristic.RotationSpeed)
-      .onSet(async (value) => {
-        await this.platform.client.setVolume(this.writeTarget(), Number(value), this.syncTargets());
-      });
+      .onSet(this.wrapWrite('volume', (value) =>
+        this.platform.client.setVolume(this.writeTarget(), Number(value), this.syncTargets())));
+  }
+
+  /**
+   * Wrap a write so a failed SOAP call surfaces as a clean HAP status (Home
+   * reverts the control) instead of an unhandled rejection that Homebridge logs
+   * as "Unhandled error thrown inside write handler".
+   */
+  private wrapWrite(label: string, fn: (value: CharacteristicValue) => Promise<void>) {
+    return async (value: CharacteristicValue): Promise<void> => {
+      try {
+        await fn(value);
+      } catch (err) {
+        const { HapStatusError, HAPStatus } = this.platform.api.hap;
+        this.platform.log.warn(
+          `${this.accessory.displayName}: ${label} write failed — ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+      }
+    };
   }
 
   /** Called by the platform on every sync pass. */
