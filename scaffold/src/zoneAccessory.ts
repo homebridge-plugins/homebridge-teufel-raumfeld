@@ -1,6 +1,14 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from 'homebridge';
 import type { RaumfeldPlatform } from './platform.js';
 import type { RaumfeldRoom, RaumfeldZone } from './raumfeldClient.js';
+import { SoapFault } from './raumfeldClient.js';
+
+/**
+ * Delay before snapping the On tile back after a Play that had nothing to play.
+ * Long enough for HAP to apply the requested value first, short enough that the
+ * tile reads as "refused to stick" rather than "turned itself off".
+ */
+const NOTHING_QUEUED_REVERT_MS = 250;
 
 export interface UpdateState {
   room?: RaumfeldRoom;
@@ -57,8 +65,17 @@ export class ZoneAccessory {
 
     // On = play / pause. TargetMediaState enum: 0 PLAY, 1 PAUSE.
     this.speaker.getCharacteristic(Characteristic.On)
-      .onSet(this.wrapWrite('play/pause', (value) =>
-        this.platform.client.setPlayState(this.writeTarget(), value ? 0 : 1)));
+      .onSet(this.wrapWrite('play/pause', async (value) => {
+        try {
+          await this.platform.client.setPlayState(this.writeTarget(), value ? 0 : 1);
+        } catch (err) {
+          if (err instanceof SoapFault && err.isTransitionUnavailable) {
+            this.revertNothingQueued();
+            return;
+          }
+          throw err;
+        }
+      }));
 
     // RotationSpeed (0-100) = volume.
     this.speaker.getCharacteristic(Characteristic.RotationSpeed)
@@ -83,6 +100,26 @@ export class ZoneAccessory {
         throw new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
       }
     };
+  }
+
+  /**
+   * Play faulted because the zone has nothing queued. The Home app can't render
+   * a custom message — a rejected write only carries a numeric HAP status, and
+   * Home picks its own wording — so rather than surface this as an error we let
+   * the write succeed and snap the tile back to off: it visibly refuses to
+   * stick, and the reason goes to the log where it can actually be read.
+   *
+   * The revert is deferred because HAP assigns the requested value *after* this
+   * handler resolves; updating in-line would just be overwritten.
+   */
+  private revertNothingQueued(): void {
+    this.platform.log.info(
+      `${this.accessory.displayName}: nothing is queued — start audio from AirPlay or the Raumfeld app first.`,
+    );
+    setTimeout(
+      () => this.speaker.updateCharacteristic(this.platform.Characteristic.On, false),
+      NOTHING_QUEUED_REVERT_MS,
+    );
   }
 
   /** Called by the platform on every sync pass. */
