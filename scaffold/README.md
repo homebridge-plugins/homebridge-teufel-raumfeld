@@ -53,12 +53,48 @@ with the plugin), or add a platform block to `config.json`:
 | `autoDiscover` | `true` | Find the Raumfeld host via SSDP. Turn off to use `host`. |
 | `host` | — | IP/hostname of the Raumfeld host. Required when `autoDiscover` is off, or when Homebridge and the speakers are on different subnets (SSDP can’t cross subnets). |
 | `pollInterval` | `2` | Safety-net poll seconds; live changes arrive instantly via the host long-poll. |
-| `airplay.enabled` | `true` | Advertise zones as AirPlay receivers. |
+| `airplay.enabled` | `true` | Advertise zones as AirPlay receivers. Requires `shairport-sync` on the host — see [AirPlay streaming](#airplay-streaming). |
 | `airplay.bufferMs` | `220` | AirPlay audio buffer. |
+| `airplay.binaryPath` | `shairport-sync` | Path to the `shairport-sync` binary. Default finds it on `PATH`. |
+| `airplay.streamHost` | auto | IP/hostname the speakers use to reach this Homebridge machine's audio stream. Auto-detected; set it when Homebridge and the speakers are on **different subnets**. |
+| `airplay.streamPort` | `8099` | TCP port for the local audio stream the speakers pull from. |
 | `multiroom.exposeGroups` | `true` | Expose active Raumfeld groups as accessories. |
 | `multiroom.syncGroupVolume` | `true` | Apply group volume changes to all members. |
 
 Restart Homebridge after saving.
+
+## AirPlay streaming
+
+Raumfeld speakers are **not** native AirPlay receivers, so the plugin bridges the
+gap: it runs a [`shairport-sync`](https://github.com/mikebrady/shairport-sync)
+process per zone (that's the AirPlay target your iPhone sees), captures the
+decoded audio, and re-serves it to the zone's renderer over HTTP.
+
+**Prerequisite — install `shairport-sync` on the Homebridge host** (built with the
+`stdout` backend, which the common packages include):
+
+```sh
+# Debian/Ubuntu/Raspberry Pi OS
+sudo apt install shairport-sync
+# macOS
+brew install shairport-sync
+```
+
+Then in `config.json`, `airplay.enabled: true` (the default). Zones appear in the
+iOS AirPlay / Control-Center output picker. Selecting one points that Raumfeld
+zone at the plugin's stream and starts playback; a grouped zone plays through its
+lead renderer and Raumfeld keeps the member speakers in sync.
+
+Notes and limits:
+
+- **Different subnets:** the speakers pull the audio stream **from** the
+  Homebridge machine, so that machine's stream host/port must be reachable from
+  the speakers. Auto-detection picks the first LAN IP; set `airplay.streamHost`
+  (and open `airplay.streamPort`) if that guess is wrong.
+- Each zone runs its own receiver in **AirPlay-1 mode** (one self-contained
+  process per zone). AirPlay-2 multi-room grouping across zones is not attempted.
+- If `shairport-sync` isn't installed, AirPlay stays off and the plugin logs a
+  one-time warning — everything else works normally.
 
 ## Multiroom behaviour
 
@@ -78,6 +114,7 @@ Stereo L · Stereo M · One · One M · Stream · Soundbar · Connector
 - Node.js ≥ 18
 - Homebridge ≥ 1.8 (Homebridge 2.0 ready)
 - A Raumfeld host (any Raumfeld/Teufel speaker or Connector acting as host) reachable on port `47365`
+- *(AirPlay only)* `shairport-sync` installed on the Homebridge host — see [AirPlay streaming](#airplay-streaming)
 
 ## Development
 
@@ -94,7 +131,9 @@ Architecture: a dynamic platform (`src/platform.ts`) mirrors the host’s rooms 
 zones as accessories; `src/raumfeldClient.ts` talks to the host HTTP API
 (`/getZones`, `/listDevices`, long-poll `updateId`) and drives each renderer over
 SOAP (RenderingControl / AVTransport); `src/zoneAccessory.ts` is the per-accessory
-HomeKit service; `src/airplayBridge.ts` manages the AirPlay receiver lifecycle.
+HomeKit service; `src/airplayBridge.ts` orchestrates AirPlay — spawning a
+`shairport-sync` receiver per zone (`src/airplayReceiver.ts`) and re-serving its
+PCM to the renderer through a small HTTP stream server (`src/airplayStreamServer.ts`).
 
 ## License
 

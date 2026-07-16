@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-16
+
+### Added
+- AirPlay streaming is now functional. Each zone is advertised as an AirPlay
+  receiver via a per-zone `shairport-sync` process; the decoded audio is
+  re-served over HTTP and the zone's Raumfeld renderer is pointed at it
+  (SetAVTransportURI + Play). Grouped zones play through the lead renderer so
+  Raumfeld keeps members in sync. Requires `shairport-sync` on the Homebridge
+  host; if absent, AirPlay stays off with a one-time warning. New config:
+  `airplay.binaryPath`, `airplay.streamHost`, `airplay.streamPort`.
+
 ## [0.1.2] - 2026-07-15
 
 ### Fixed

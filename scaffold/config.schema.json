@@ -52,6 +52,35 @@
             "default": 220,
             "minimum": 50,
             "maximum": 2000
+          },
+          "binaryPath": {
+            "title": "shairport-sync path",
+            "description": "Path to the shairport-sync binary that provides the AirPlay receiver. Must be installed on the Homebridge host. Leave as the default to find it on PATH.",
+            "type": "string",
+            "default": "shairport-sync",
+            "condition": {
+              "functionBody": "return model.airplay && model.airplay.enabled !== false;"
+            }
+          },
+          "streamHost": {
+            "title": "Stream host (advanced)",
+            "description": "IP/hostname the speakers use to reach this Homebridge machine's audio stream. Leave blank to auto-detect. Set it if Homebridge and the speakers are on different subnets.",
+            "type": "string",
+            "placeholder": "auto",
+            "condition": {
+              "functionBody": "return model.airplay && model.airplay.enabled !== false;"
+            }
+          },
+          "streamPort": {
+            "title": "Stream port (advanced)",
+            "description": "TCP port for the local audio stream server the speakers pull from.",
+            "type": "integer",
+            "default": 8099,
+            "minimum": 1024,
+            "maximum": 65535,
+            "condition": {
+              "functionBody": "return model.airplay && model.airplay.enabled !== false;"
+            }
           }
         }
       },
