@@ -29,6 +29,15 @@
           "functionBody": "return model.autoDiscover === false;"
         }
       },
+      "discoverySubnet": {
+        "title": "Discovery subnet (CIDR)",
+        "description": "CIDR of the speakers' subnet, e.g. 192.168.20.0/24 (prefix /22–/30). Set this only when the speakers are on a different subnet/VLAN than Homebridge: SSDP multicast is link-local, so auto-discover falls back to a unicast scan of this range. Ignored when auto-discover is off.",
+        "type": "string",
+        "placeholder": "192.168.20.0/24",
+        "condition": {
+          "functionBody": "return model.autoDiscover !== false;"
+        }
+      },
       "pollInterval": {
         "title": "Poll interval (seconds)",
         "type": "integer",

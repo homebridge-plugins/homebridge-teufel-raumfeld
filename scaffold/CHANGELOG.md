@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-16
+
+### Added
+- Cross-subnet host discovery. SSDP multicast is link-local and can't reach
+  speakers on a different subnet/VLAN than Homebridge. A new optional
+  `discoverySubnet` (CIDR, e.g. `192.168.20.0/24`, prefix /22–/30) makes
+  auto-discover fall back to a bounded unicast scan of that range when SSDP
+  finds nothing — both at runtime and in the config UI's live device list.
+
+### Changed
+- Zone accessories are now modeled as a Fan (On = play/pause, RotationSpeed =
+  volume) instead of a SmartSpeaker. The Apple Home app does not render a
+  third-party SmartSpeaker (it shows "Not Supported"), so this gives a working
+  on/off + volume tile in Home. Accessories cached from an earlier build have
+  their stale SmartSpeaker service removed automatically on load.
+
+### Fixed
+- The custom config UI no longer erases advanced AirPlay settings
+  (`binaryPath`, `streamHost`, `streamPort`) when saving; the edited
+  `enabled`/`bufferMs` fields are merged into the existing object instead.
+
 ## [0.2.0] - 2026-07-16
 
 ### Added

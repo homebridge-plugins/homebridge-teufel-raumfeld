@@ -17,8 +17,11 @@ export interface UpdateState {
 }
 
 /**
- * Wraps a single HomeKit accessory (a room OR a group). Exposes a SmartSpeaker
- * with volume + mute + a current-media state.
+ * Wraps a single HomeKit accessory (a room OR a group). Modeled as a Fan so the
+ * Apple Home app renders a working tile: On = play/pause, RotationSpeed = volume
+ * (0-100). Home does NOT render a third-party SmartSpeaker (shows "Not Supported"),
+ * so Fan is the closest service with an on/off toggle + a 0-100 slider that Home
+ * actually controls. Semantics are cosmetic only — no real fan involved.
  *
  * Locking rule: when `lockedInGroup` is true this member room is not
  * independently controllable, so any write is routed to the group lead renderer
@@ -44,24 +47,24 @@ export class ZoneAccessory {
       .setCharacteristic(Characteristic.Model, accessory.context.model ?? 'Speaker')
       .setCharacteristic(Characteristic.SerialNumber, accessory.context.id ?? 'unknown');
 
-    this.speaker = this.accessory.getService(Service.SmartSpeaker)
-      ?? this.accessory.addService(Service.SmartSpeaker, accessory.displayName);
+    // Migrate accessories cached from an earlier SmartSpeaker build: strip the
+    // stale service so Home doesn't show the "Not Supported" tile alongside the Fan.
+    const stale = this.accessory.getService(Service.SmartSpeaker);
+    if (stale) this.accessory.removeService(stale);
 
-    // Play / pause via TargetMediaState.
-    this.speaker.getCharacteristic(Characteristic.TargetMediaState)
+    this.speaker = this.accessory.getService(Service.Fan)
+      ?? this.accessory.addService(Service.Fan, accessory.displayName);
+
+    // On = play / pause. TargetMediaState enum: 0 PLAY, 1 PAUSE.
+    this.speaker.getCharacteristic(Characteristic.On)
       .onSet(async (value) => {
-        await this.platform.client.setPlayState(this.writeTarget(), Number(value));
+        await this.platform.client.setPlayState(this.writeTarget(), value ? 0 : 1);
       });
 
-    // Volume (0-100) + Mute.
-    this.speaker.getCharacteristic(Characteristic.Volume)
+    // RotationSpeed (0-100) = volume.
+    this.speaker.getCharacteristic(Characteristic.RotationSpeed)
       .onSet(async (value) => {
         await this.platform.client.setVolume(this.writeTarget(), Number(value), this.syncTargets());
-      });
-
-    this.speaker.getCharacteristic(Characteristic.Mute)
-      .onSet(async (value) => {
-        await this.platform.client.setMute(this.writeTarget(), Boolean(value), this.syncTargets());
       });
   }
 
@@ -78,23 +81,19 @@ export class ZoneAccessory {
     this.syncGroupVolume = state.syncGroupVolume ?? true;
 
     // Only push characteristics the host actually reported. A failed/skipped
-    // enrich leaves volume/mute/playing undefined; writing 0/false/paused here
-    // would clobber the last-known HomeKit state with bogus values.
-    if (src.volume !== undefined) this.setChar(Characteristic.Volume, src.volume);
-    if (src.mute !== undefined) this.setChar(Characteristic.Mute, src.mute);
-    if (src.playing !== undefined) {
-      this.setChar(
-        Characteristic.CurrentMediaState,
-        src.playing ? Characteristic.CurrentMediaState.PLAY : Characteristic.CurrentMediaState.PAUSE,
-      );
+    // enrich leaves volume/playing undefined; writing 0/false here would clobber
+    // the last-known HomeKit state with bogus values. Mute is folded into On:
+    // a muted or paused zone reads as the Fan being off.
+    if (src.volume !== undefined) this.setChar(Characteristic.RotationSpeed, src.volume);
+    if (src.playing !== undefined || src.mute !== undefined) {
+      const on = src.playing !== false && src.mute !== true;
+      this.setChar(Characteristic.On, on);
     }
     if (src.name) this.setChar(Characteristic.ConfiguredName, src.name);
 
     // The "in use" lock is enforced by routing member writes to the group lead
-    // (see writeTarget()). We deliberately do NOT surface it via StatusFault:
-    // that characteristic isn't part of the SmartSpeaker service and Homebridge
-    // warns "Adding anyway" for every accessory. Home already shows grouped
-    // members as controlled-together via the group accessory.
+    // (see writeTarget()). Home already shows grouped members as controlled
+    // together via the group accessory, so no extra fault characteristic is set.
   }
 
   /** Where a write for this accessory should land right now. */

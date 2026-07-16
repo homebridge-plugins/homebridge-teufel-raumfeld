@@ -77,8 +77,30 @@ export class RaumfeldClient {
     private readonly log: Logging,
   ) {}
 
-  /** SSDP-discover the Raumfeld host IP. Returns undefined if none found. */
-  static async discover(log: Logging): Promise<string | undefined> {
+  /**
+   * Discover the Raumfeld host IP. Tries SSDP multicast first; if that finds
+   * nothing and a `subnet` (CIDR) is given, falls back to a unicast sweep of
+   * that subnet. Multicast is link-local (routers don't forward 239.255.255.250),
+   * so the unicast sweep is the only auto-discovery that works when Homebridge
+   * and the speakers sit on different subnets/VLANs. Returns undefined if none.
+   */
+  static async discover(log: Logging, subnet?: string): Promise<string | undefined> {
+    const viaSsdp = await RaumfeldClient.discoverViaSsdp(log);
+    if (viaSsdp) return viaSsdp;
+
+    if (subnet) {
+      log.debug(`SSDP found nothing; unicast-sweeping ${subnet} for the Raumfeld host…`);
+      const viaSweep = await RaumfeldClient.sweepSubnet(subnet, log);
+      if (viaSweep) {
+        log.info(`Discovered Raumfeld host at ${viaSweep} (unicast sweep of ${subnet})`);
+        return viaSweep;
+      }
+      log.debug(`No host in ${subnet} answered /getZones on :${RAUMFELD_HTTP_PORT}.`);
+    }
+    return undefined;
+  }
+
+  private static async discoverViaSsdp(log: Logging): Promise<string | undefined> {
     log.debug('SSDP search for the Raumfeld host…');
     const client = new SsdpClient();
     const candidates = new Set<string>();
@@ -106,10 +128,33 @@ export class RaumfeldClient {
     }
   }
 
+  /**
+   * Unicast-probe every usable host in a CIDR (e.g. "192.168.20.0/24"), in
+   * bounded-concurrency batches, and return the first that serves /getZones.
+   * Prefix must be /22..\/30 to keep the sweep to at most ~1022 probes.
+   */
+  private static async sweepSubnet(cidr: string, log: Logging): Promise<string | undefined> {
+    const hosts = enumerateCidr(cidr);
+    if (!hosts) {
+      log.warn(`Discovery subnet "${cidr}" is not a valid CIDR (expected e.g. 192.168.20.0/24, prefix /22–/30).`);
+      return undefined;
+    }
+    const CONCURRENCY = 32;
+    for (let i = 0; i < hosts.length; i += CONCURRENCY) {
+      const batch = hosts.slice(i, i + CONCURRENCY);
+      const hits = await Promise.all(
+        batch.map(async (ip) => ((await RaumfeldClient.probe(ip, 1000)) ? ip : undefined)),
+      );
+      const found = hits.find((ip) => ip !== undefined);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
   /** True if `address` answers the Raumfeld zone API. */
-  private static async probe(address: string): Promise<boolean> {
+  private static async probe(address: string, timeoutMs = 2000): Promise<boolean> {
     try {
-      const res = await fetchWithTimeout(`http://${address}:${RAUMFELD_HTTP_PORT}/getZones`, {}, 2000);
+      const res = await fetchWithTimeout(`http://${address}:${RAUMFELD_HTTP_PORT}/getZones`, {}, timeoutMs);
       void res.body?.cancel(); // probe only needs the status; release the socket
       return res.ok;
     } catch {
@@ -510,6 +555,32 @@ export class RaumfeldClient {
 }
 
 // --- module-local helpers ---------------------------------------------------
+
+/**
+ * Expand a CIDR into its usable host IPs (drops network + broadcast for /<31).
+ * Returns undefined for malformed input or an over-wide prefix (< /22), which
+ * would balloon the sweep. Supports /22../32.
+ */
+function enumerateCidr(cidr: string): string[] | undefined {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr.trim());
+  if (!m) return undefined;
+  const octets = [m[1], m[2], m[3], m[4]].map(Number);
+  const prefix = Number(m[5]);
+  if (octets.some((o) => o > 255) || prefix < 22 || prefix > 32) return undefined;
+
+  const base = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+  const size = 2 ** (32 - prefix);
+  const network = base & (size === 2 ** 32 ? 0 : ~(size - 1) >>> 0);
+  // /31 and /32 have no network/broadcast to skip; larger blocks drop both.
+  const first = prefix >= 31 ? network : network + 1;
+  const last = prefix >= 31 ? network + size - 1 : network + size - 2;
+
+  const hosts: string[] = [];
+  for (let n = first; n <= last; n++) {
+    hosts.push([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.'));
+  }
+  return hosts;
+}
 
 async function fetchWithTimeout(
   url: string,
