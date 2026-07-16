@@ -2,8 +2,8 @@
 
 Offline-installable tarball of the plugin. No npm-registry access needed.
 
-- **File:** `homebridge-teufel-raumfeld-0.2.0.tgz`
-- **SHA-256:** `39bcb7b3cffb46f40d23dc3653d6bdeff1e0830181c4748c9f1c32282cd56f19`
+- **File:** `homebridge-teufel-raumfeld-0.3.0.tgz`
+- **SHA-256:** `eca0a718da3e7afb4f8d7ce7c913158cd66aa616cd438db10ddb6e0484da18cf`
 - Bundles the built `dist/`, `config.schema.json`, and the custom Config UI (`homebridge-ui/`). Runtime deps (`@homebridge/plugin-ui-utils`, `fast-xml-parser`, `node-ssdp`) are pulled automatically on install.
 
 ## Install on the Homebridge host
@@ -12,17 +12,17 @@ Copy the `.tgz` to the machine that runs Homebridge (e.g. `192.168.1.10`), then:
 
 ```bash
 # global install (standard Homebridge)
-sudo npm install -g ./homebridge-teufel-raumfeld-0.2.0.tgz
+sudo npm install -g ./homebridge-teufel-raumfeld-0.3.0.tgz
 sudo hb-service restart
 ```
 
 Homebridge Config UI X plugin dir install (if you don't use `-g`):
 ```bash
 # from the Homebridge storage dir (the folder holding your config.json)
-npm install ./homebridge-teufel-raumfeld-0.2.0.tgz
+npm install ./homebridge-teufel-raumfeld-0.3.0.tgz
 ```
 
-Docker: mount the tarball in and `npm install -g /path/homebridge-teufel-raumfeld-0.2.0.tgz` inside the container, then restart.
+Docker: mount the tarball in and `npm install -g /path/homebridge-teufel-raumfeld-0.3.0.tgz` inside the container, then restart.
 
 ## Configure
 
@@ -43,18 +43,20 @@ or edit `config.json` directly:
 ]
 ```
 
-- Homebridge and the speakers on **different subnets** → set `host` manually and leave
-  `autoDiscover: false` (SSDP multicast can't cross subnets; the plugin resolves speakers via
-  the host's `/listDevices` over HTTP, which does).
-- Same subnet → `autoDiscover: true` also works.
+- Homebridge and the speakers on **different subnets** → either set `host` manually with
+  `autoDiscover: false`, or keep `autoDiscover: true` and add `"discoverySubnet": "192.168.20.0/24"`
+  (the speakers' CIDR). SSDP multicast can't cross subnets, so the plugin unicast-scans that
+  range instead.
+- Same subnet → `autoDiscover: true` works with no extra config.
 
-Restart Homebridge. Your rooms appear as speaker tiles and active Raumfeld groups appear as a
-single group accessory.
+Restart Homebridge. Your rooms appear as tiles in the Home app (modeled as a Fan: on/off =
+play/pause, slider = volume — the Home app won't render a third-party smart-speaker), and active
+Raumfeld groups appear as a single group accessory.
 
 ## Verify / rebuild the packet
 
 ```bash
-sha256sum homebridge-teufel-raumfeld-0.2.0.tgz     # compare to the hash above
+sha256sum homebridge-teufel-raumfeld-0.3.0.tgz     # compare to the hash above
 # rebuild from source:
 cd ../scaffold && npm install && npm run build && npm pack
 ```

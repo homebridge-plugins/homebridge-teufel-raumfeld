@@ -18,6 +18,7 @@ import { RaumfeldClient, type RaumfeldState, type RaumfeldRoom } from './raumfel
 export interface RaumfeldConfig extends PlatformConfig {
   autoDiscover?: boolean;
   host?: string;
+  discoverySubnet?: string;
   pollInterval?: number;
   airplay?: { enabled?: boolean; bufferMs?: number; binaryPath?: string; streamHost?: string; streamPort?: number };
   multiroom?: { exposeGroups?: boolean; syncGroupVolume?: boolean };
@@ -80,7 +81,7 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
 
   private async bootstrap(): Promise<void> {
     const host = this.config.autoDiscover !== false
-      ? await RaumfeldClient.discover(this.log)
+      ? await RaumfeldClient.discover(this.log, this.config.discoverySubnet)
       : this.config.host;
     if (this.shuttingDown) return;
 

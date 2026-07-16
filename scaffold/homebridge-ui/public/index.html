@@ -155,7 +155,15 @@
           <span class="label">Raumfeld host</span>
           <span class="value"><input type="text" id="host" placeholder="192.168.178.42" spellcheck="false"></span>
         </div>
+        <div class="row">
+          <span class="grow">
+            <span class="label">Discovery subnet</span>
+            <span class="subtitle">CIDR of the speakers' subnet. Set it when they're on a different subnet than Homebridge (SSDP can't cross subnets).</span>
+          </span>
+          <span class="value"><input type="text" id="discoverySubnet" placeholder="192.168.20.0/24" spellcheck="false"></span>
+        </div>
       </div>
+      <div class="section-note">Multicast discovery is link-local. For a different subnet/VLAN, set the discovery subnet above for a unicast scan.</div>
     </div>
 
     <!-- DEVICES -->
@@ -226,6 +234,7 @@ async function init() {
 
   $('autoDiscover').checked = config.autoDiscover !== false;
   $('host').value = config.host ?? '';
+  $('discoverySubnet').value = config.discoverySubnet ?? '';
   $('airplayEnabled').checked = config.airplay?.enabled !== false;
   $('bufferMs').value = config.airplay?.bufferMs ?? 220;
   $('exposeGroups').checked = config.multiroom?.exposeGroups !== false;
@@ -234,11 +243,25 @@ async function init() {
   await refreshLive();
   $('host').addEventListener('change', refreshLive);
   $('autoDiscover').addEventListener('change', refreshLive);
+  $('discoverySubnet').addEventListener('change', refreshLive);
   $('save').addEventListener('click', save);
 }
 
 async function refreshLive() {
-  const host = $('host').value.trim();
+  let host = $('host').value.trim();
+
+  // Auto-discover: no host typed but discovery on → find the host first, so the
+  // device list populates on a default install (host field blank). SSDP first,
+  // then a unicast sweep of the discovery subnet for cross-subnet setups.
+  if (!host && $('autoDiscover').checked) {
+    setPill(null, 'Discovering…');
+    try {
+      const subnet = $('discoverySubnet').value.trim() || undefined;
+      const found = await homebridge.request('/discover', { subnet });
+      if (found?.host) host = found.host;
+    } catch (e) { homebridge.toast.error(String(e.message ?? e), 'Raumfeld'); }
+  }
+
   $('hostSubtitle').textContent = 'v1.4.0 · host ' + (host || '—');
   if (!host) { setPill(false, 'No host'); renderDevices([]); renderZones([]); return; }
 
@@ -318,7 +341,10 @@ async function save() {
     config.name = config.name ?? 'Raumfeld';
     config.autoDiscover = $('autoDiscover').checked;
     config.host = $('host').value.trim() || undefined;
-    config.airplay = { enabled: $('airplayEnabled').checked, bufferMs: Number($('bufferMs').value) };
+    config.discoverySubnet = $('discoverySubnet').value.trim() || undefined;
+    // Merge — the UI only edits enabled/bufferMs. Preserve advanced fields
+    // (binaryPath/streamHost/streamPort) that have no control on this form.
+    config.airplay = { ...config.airplay, enabled: $('airplayEnabled').checked, bufferMs: Number($('bufferMs').value) };
     config.multiroom = { exposeGroups: $('exposeGroups').checked, syncGroupVolume: $('syncGroupVolume').checked };
     if (devices.length) config.devices = devices;
 
