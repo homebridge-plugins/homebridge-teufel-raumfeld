@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-07-16
+
+### Fixed
+- Tapping a zone's on/off tile no longer throws "Unhandled error thrown inside
+  write handler". Playback control (Play) on a zone with nothing queued faults
+  with UPnP 701 (transition not available); this is now treated as a no-op and
+  the tile reverts, instead of crashing the write handler. All other SOAP write
+  failures are surfaced as a clean HomeKit status so Home reverts the control
+  rather than logging a stack trace. Note: on/off can only resume an existing
+  source — starting audio still requires AirPlay or the Raumfeld app.
+
 ## [0.3.0] - 2026-07-16
 
 ### Added
