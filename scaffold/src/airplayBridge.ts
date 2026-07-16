@@ -1,5 +1,7 @@
 import type { Logging } from 'homebridge';
 import type { RaumfeldClient } from './raumfeldClient.js';
+import { AirPlayReceiver } from './airplayReceiver.js';
+import { AirPlayStreamServer } from './airplayStreamServer.js';
 
 export interface AirPlayTarget {
   /** Stable zone/room id (used as the receiver session key). */
@@ -8,59 +10,71 @@ export interface AirPlayTarget {
   name: string;
   /** Renderer udn the decoded PCM stream is pushed into. */
   rendererUdn: string;
-  /** For a group: the member renderer udns to keep in sync. */
+  /** For a group: the member renderer udns (Raumfeld syncs these internally). */
   memberUdns: string[];
 }
 
 export interface AirPlayOptions {
   enabled: boolean;
   bufferMs: number;
+  /** shairport-sync binary providing the AirPlay receiver. */
+  binaryPath: string;
+  /** Host/IP the speakers use to reach our stream server; auto-detect when unset. */
+  streamHost?: string;
+  streamPort: number;
 }
+
+/** Base RTSP port; each concurrent receiver gets base + index. */
+const RTSP_PORT_BASE = 5000;
 
 interface Session {
   target: AirPlayTarget;
-  /** True once a receiver is actually advertising for this zone. */
-  active: boolean;
+  receiver: AirPlayReceiver;
+  rtspPort: number;
 }
 
 /**
- * Advertises each Raumfeld zone (and group) as an AirPlay receiver and, on
- * selection in the iOS output picker, pushes the decoded PCM into that zone's
- * renderer via OpenHome SetChannel / a play-URL (see handoff README §AirPlay).
+ * Advertises each Raumfeld zone (and group) as an AirPlay receiver via a
+ * per-zone shairport-sync process, and on playback re-serves the decoded PCM to
+ * that zone's renderer.
  *
- * The audio path itself is delegated to a shairport-sync / airtunes2 style
- * receiver — a native component, spawned per zone. This class owns the
- * *lifecycle* (which zones are advertised, session bookkeeping, teardown) and
- * exposes a single seam, {@link startReceiver}, where that receiver is wired
- * in. AirPlay 1 single-zone is a valid first milestone; group sync is layered
- * on by fanning the same stream to `memberUdns`.
+ * Flow per zone: shairport-sync decodes AirPlay -> PCM on stdout ->
+ * {@link AirPlayStreamServer} exposes it as an HTTP WAV URL -> the renderer is
+ * pointed at that URL (SetAVTransportURI) and told to Play. Grouped zones target
+ * the zone's (virtual) lead renderer, so Raumfeld keeps the member speakers in
+ * sync internally — no manual PCM fan-out.
+ *
+ * If shairport-sync isn't installed, the bridge stays inert and warns once, so
+ * the plugin degrades cleanly rather than advertising dead targets.
  */
 export class AirPlayBridge {
   private readonly sessions = new Map<string, Session>();
-  /** Warn once, not per zone, that the native receiver isn't wired in this build. */
-  private warnedUnavailable = false;
+  private readonly streamServer: AirPlayStreamServer;
+  private available?: boolean;
+  private serverStarted = false;
+  private usedPorts = new Set<number>();
 
   constructor(
     private readonly log: Logging,
     private readonly client: RaumfeldClient,
     private readonly options: AirPlayOptions,
-  ) {}
+  ) {
+    this.streamServer = new AirPlayStreamServer(log, options.streamPort, options.streamHost);
+  }
 
   /** Reconcile advertised receivers with the current set of zones. */
   syncTargets(targets: AirPlayTarget[]): void {
-    if (!this.options.enabled) {
+    if (!this.options.enabled || !this.ensureAvailable()) {
       this.stopAll();
       return;
     }
+    void this.ensureServer();
 
     const wanted = new Map(targets.map((t) => [t.zoneId, t]));
 
     // Drop receivers for zones that vanished.
     for (const [zoneId, session] of this.sessions) {
-      if (!wanted.has(zoneId)) {
-        this.stopReceiver(session);
-        this.sessions.delete(zoneId);
-      }
+      if (!wanted.has(zoneId)) this.teardown(zoneId, session);
     }
 
     // Add receivers for new zones; refresh the target on existing ones.
@@ -70,54 +84,93 @@ export class AirPlayBridge {
         existing.target = target;
         continue;
       }
-      const session: Session = { target, active: false };
-      this.sessions.set(target.zoneId, session);
-      this.startReceiver(session);
+      this.startSession(target);
     }
   }
 
   stop(): void {
     this.stopAll();
+    this.streamServer.stop();
+    this.serverStarted = false;
+  }
+
+  private startSession(target: AirPlayTarget): void {
+    const rtspPort = this.claimPort();
+    const receiver = new AirPlayReceiver(this.log, this.options.binaryPath, target.name, rtspPort, {
+      onSessionStart: (pcm) => {
+        const session = this.sessions.get(target.zoneId);
+        if (!session) return;
+        this.streamServer.setSource(target.zoneId, pcm);
+        const url = this.streamServer.urlFor(target.zoneId);
+        this.log.debug(`AirPlay: routing "${session.target.name}" -> ${session.target.rendererUdn} via ${url}`);
+        this.playOnRenderer(session.target, url).catch((err) =>
+          this.log.error(`AirPlay: failed to start playback on "${session.target.name}": ${(err as Error).message}`));
+      },
+      onSessionEnd: () => {
+        const session = this.sessions.get(target.zoneId);
+        this.streamServer.clearSource(target.zoneId);
+        if (!session) return;
+        this.client.setPlayState(session.target.rendererUdn, 2) // 2 = STOP
+          .catch((err) => this.log.debug(`AirPlay: stop on "${session.target.name}" failed: ${(err as Error).message}`));
+      },
+    });
+
+    this.streamServer.register(target.zoneId);
+    this.sessions.set(target.zoneId, { target, receiver, rtspPort });
+    receiver.start();
+    this.log.info(`AirPlay: advertising "${target.name}" (buffer ${this.options.bufferMs} ms).`);
+  }
+
+  private async playOnRenderer(target: AirPlayTarget, url: string): Promise<void> {
+    await this.client.setAvTransportUri(target.rendererUdn, url);
+    await this.client.setPlayState(target.rendererUdn, 0); // 0 = PLAY
+  }
+
+  private teardown(zoneId: string, session: Session): void {
+    session.receiver.stop();
+    this.streamServer.unregister(zoneId);
+    this.usedPorts.delete(session.rtspPort);
+    this.sessions.delete(zoneId);
   }
 
   private stopAll(): void {
-    for (const session of this.sessions.values()) this.stopReceiver(session);
+    for (const [zoneId, session] of this.sessions) this.teardown(zoneId, session);
     this.sessions.clear();
+    this.usedPorts.clear();
   }
 
-  /**
-   * Bring up an AirPlay receiver for one zone. Integration seam: spawn
-   * shairport-sync (or embed node_airtunes2) advertising `target.name`, decode
-   * to PCM, and on stream start hand the URL/PCM to the renderer via
-   * `client.setPlayState` / an OpenHome SetChannel call, fanning to
-   * `target.memberUdns` for a synced group.
-   */
-  private startReceiver(session: Session): void {
-    const { name, rendererUdn, memberUdns } = session.target;
-    // The native receiver (shairport-sync / airtunes2) is not spawned in this
-    // build. Do NOT flip `active`: an advertised-but-nonexistent receiver would
-    // show up in the iOS picker and silently fail on selection. Report the
-    // feature as unavailable (once) and leave the session inactive until the
-    // process launch is wired into this seam.
-    if (!this.warnedUnavailable) {
-      this.warnedUnavailable = true;
-      this.log.warn(
-        'AirPlay: native receiver not built into this release; zones will NOT appear as '
-        + 'AirPlay targets. Set airplay.enabled=false to silence this.',
-      );
+  /** Check (once) that the shairport-sync binary is usable; warn if not. */
+  private ensureAvailable(): boolean {
+    if (this.available === undefined) {
+      this.available = AirPlayReceiver.available(this.options.binaryPath);
+      if (!this.available) {
+        this.log.warn(
+          `AirPlay: shairport-sync not found at "${this.options.binaryPath}"; zones will NOT appear as `
+          + 'AirPlay targets. Install shairport-sync on the Homebridge host, set airplay.binaryPath, '
+          + 'or set airplay.enabled=false to silence this.',
+        );
+      }
     }
-    this.log.debug(
-      `AirPlay: would advertise "${name}" -> renderer ${rendererUdn}`
-      + (memberUdns.length ? ` (+${memberUdns.length} synced)` : '')
-      + `, buffer ${this.options.bufferMs} ms (receiver not wired).`,
-    );
-    session.active = false;
-    void this.client; // referenced here once the receiver hands PCM to the renderer.
+    return this.available;
   }
 
-  private stopReceiver(session: Session): void {
-    if (!session.active) return;
-    this.log.info(`AirPlay: withdrawing "${session.target.name}".`);
-    session.active = false;
+  private async ensureServer(): Promise<void> {
+    if (this.serverStarted) return;
+    this.serverStarted = true;
+    try {
+      await this.streamServer.start();
+    } catch (err) {
+      this.serverStarted = false;
+      this.log.error(`AirPlay: stream server failed to start: ${(err as Error).message}`);
+    }
+  }
+
+  private claimPort(): number {
+    let port = RTSP_PORT_BASE;
+    // shairport-sync uses the RTSP port plus separate RTP UDP ports (timing/
+    // control/audio); space instances well apart so those don't collide.
+    while (this.usedPorts.has(port)) port += 10;
+    this.usedPorts.add(port);
+    return port;
   }
 }

@@ -19,7 +19,7 @@ export interface RaumfeldConfig extends PlatformConfig {
   autoDiscover?: boolean;
   host?: string;
   pollInterval?: number;
-  airplay?: { enabled?: boolean; bufferMs?: number };
+  airplay?: { enabled?: boolean; bufferMs?: number; binaryPath?: string; streamHost?: string; streamPort?: number };
   multiroom?: { exposeGroups?: boolean; syncGroupVolume?: boolean };
   devices?: Array<{ udn: string; name: string; model: string; exposed: boolean }>;
 }
@@ -101,6 +101,9 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
     this.airplay = new AirPlayBridge(this.log, this.client, {
       enabled: this.config.airplay?.enabled !== false,
       bufferMs: this.config.airplay?.bufferMs ?? 220,
+      binaryPath: this.config.airplay?.binaryPath ?? 'shairport-sync',
+      streamHost: this.config.airplay?.streamHost,
+      streamPort: this.config.airplay?.streamPort ?? 8099,
     });
 
     this.running = true;

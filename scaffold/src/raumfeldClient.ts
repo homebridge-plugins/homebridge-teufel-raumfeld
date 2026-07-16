@@ -203,6 +203,21 @@ export class RaumfeldClient {
   }
 
   /**
+   * Point a renderer at a media URI (UPnP AVTransport SetAVTransportURI), then
+   * the caller issues Play. `metadata` is a DIDL-Lite document describing the
+   * item; many renderers accept an empty string. NOTE: spike/experimental — used
+   * to test whether a Raumfeld renderer will play a foreign HTTP stream (the
+   * precondition for the AirPlay re-serve path). Not yet wired into the plugin.
+   */
+  async setAvTransportUri(rendererUdn: string, uri: string, metadata = ''): Promise<void> {
+    await this.soapRequired(rendererUdn, 'avTransport', 'SetAVTransportURI', {
+      InstanceID: 0,
+      CurrentURI: uri,
+      CurrentURIMetaData: metadata,
+    });
+  }
+
+  /**
    * Set volume (0-100). For a group pass the member renderer udns in `alsoUdns`
    * so each speaker tracks the group volume (config: syncGroupVolume). Every
    * target is attempted; failures are aggregated so one dead member doesn't

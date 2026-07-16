@@ -12,3 +12,9 @@ scaffold/test/hbConfig/accessories/
 scaffold/test/hbConfig/persist/
 scaffold/test/hbConfig/backups/
 scaffold/test/hbConfig/*.log
+
+# npm auth token (env-expanded, never commit)
+scaffold/.npmrc
+
+# local AirPlay spike test audio
+scaffold/test/*.mp3

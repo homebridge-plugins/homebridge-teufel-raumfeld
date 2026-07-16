@@ -2,8 +2,8 @@
 
 Offline-installable tarball of the plugin. No npm-registry access needed.
 
-- **File:** `homebridge-teufel-raumfeld-0.1.2.tgz`
-- **SHA-256:** `a018aa5b84b1987ed566efee23c0d9a524dd25ce07897ff3b1fd29eb1f88efe3`
+- **File:** `homebridge-teufel-raumfeld-0.2.0.tgz`
+- **SHA-256:** `39bcb7b3cffb46f40d23dc3653d6bdeff1e0830181c4748c9f1c32282cd56f19`
 - Bundles the built `dist/`, `config.schema.json`, and the custom Config UI (`homebridge-ui/`). Runtime deps (`@homebridge/plugin-ui-utils`, `fast-xml-parser`, `node-ssdp`) are pulled automatically on install.
 
 ## Install on the Homebridge host
@@ -12,17 +12,17 @@ Copy the `.tgz` to the machine that runs Homebridge (e.g. `192.168.1.10`), then:
 
 ```bash
 # global install (standard Homebridge)
-sudo npm install -g ./homebridge-teufel-raumfeld-0.1.2.tgz
+sudo npm install -g ./homebridge-teufel-raumfeld-0.2.0.tgz
 sudo hb-service restart
 ```
 
 Homebridge Config UI X plugin dir install (if you don't use `-g`):
 ```bash
 # from the Homebridge storage dir (the folder holding your config.json)
-npm install ./homebridge-teufel-raumfeld-0.1.2.tgz
+npm install ./homebridge-teufel-raumfeld-0.2.0.tgz
 ```
 
-Docker: mount the tarball in and `npm install -g /path/homebridge-teufel-raumfeld-0.1.2.tgz` inside the container, then restart.
+Docker: mount the tarball in and `npm install -g /path/homebridge-teufel-raumfeld-0.2.0.tgz` inside the container, then restart.
 
 ## Configure
 
@@ -54,7 +54,7 @@ single group accessory.
 ## Verify / rebuild the packet
 
 ```bash
-sha256sum homebridge-teufel-raumfeld-0.1.2.tgz     # compare to the hash above
+sha256sum homebridge-teufel-raumfeld-0.2.0.tgz     # compare to the hash above
 # rebuild from source:
 cd ../scaffold && npm install && npm run build && npm pack
 ```
