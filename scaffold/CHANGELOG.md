@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-07-16
+
+### Fixed
+- The on/off tile no longer stays lit for up to 30 seconds after tapping a zone
+  with nothing queued. 0.3.1 swallowed the UPnP 701 fault and reported the write
+  as successful, so Home kept showing "on" until the next sync pass (the long-poll
+  never fires for a no-op, leaving the 30 s safety-net interval to correct it).
+  The tile now snaps back to off right away, without an error: the Home app can't
+  render a custom message, so the explanation ("nothing is queued — start audio
+  from AirPlay or the Raumfeld app first") goes to the Homebridge log instead.
+  Other SOAP write failures still surface as a HomeKit communication error.
+
 ## [0.3.1] - 2026-07-16
 
 ### Fixed

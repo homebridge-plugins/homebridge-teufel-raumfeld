@@ -265,18 +265,11 @@ export class RaumfeldClient {
     const action = targetMediaState === 0 ? 'Play' : targetMediaState === 1 ? 'Pause' : 'Stop';
     const args: Record<string, string | number> = { InstanceID: 0 };
     if (action === 'Play') args.Speed = '1';
-    try {
-      await this.soapRequired(rendererUdn, 'avTransport', action, args);
-    } catch (err) {
-      // Play with nothing queued (no radio/AirPlay/stream loaded) faults with
-      // UPnP 701. Nothing to start, so treat it as a no-op rather than an error —
-      // the poll loop will revert the HomeKit toggle to off.
-      if (action === 'Play' && err instanceof SoapFault && err.isTransitionUnavailable) {
-        this.log.info(`${rendererUdn}: Play ignored — nothing is queued on this zone.`);
-        return;
-      }
-      throw err;
-    }
+    // Play on a zone with nothing queued faults with UPnP 701; that fault is
+    // left to propagate so the caller can decide how to present it (see
+    // SoapFault.isTransitionUnavailable). Swallowing it here would report a
+    // write as successful that never started any audio.
+    await this.soapRequired(rendererUdn, 'avTransport', action, args);
   }
 
   /**
