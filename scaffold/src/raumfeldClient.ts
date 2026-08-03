@@ -1,4 +1,5 @@
 import type { Logging } from 'homebridge';
+import { networkInterfaces } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { XMLParser } from 'fast-xml-parser';
 import ssdp from 'node-ssdp';
@@ -109,31 +110,61 @@ export class RaumfeldClient {
     const viaSsdp = await RaumfeldClient.discoverViaSsdp(log);
     if (viaSsdp) return viaSsdp;
 
-    if (subnet) {
-      log.debug(`SSDP found nothing; unicast-sweeping ${subnet} for the Raumfeld host…`);
-      const viaSweep = await RaumfeldClient.sweepSubnet(subnet, log);
+    // Sweep the configured subnet if one is given, otherwise every local IPv4
+    // subnet. On a multi-homed host (Wi-Fi + Ethernet, VLAN NICs, a VPN tunnel)
+    // the speakers are frequently on a NIC that is not the one holding the
+    // default multicast route, so the sweep — not SSDP — is what finds them.
+    const subnets = subnet ? [subnet] : localSubnets();
+    if (!subnets.length) {
+      log.debug('SSDP found nothing and no sweepable local IPv4 subnet was detected.');
+      return undefined;
+    }
+    for (const cidr of subnets) {
+      log.debug(`SSDP found nothing; unicast-sweeping ${cidr} for the Raumfeld host…`);
+      const viaSweep = await RaumfeldClient.sweepSubnet(cidr, log);
       if (viaSweep) {
-        log.info(`Discovered Raumfeld host at ${viaSweep} (unicast sweep of ${subnet})`);
+        log.info(`Discovered Raumfeld host at ${viaSweep} (unicast sweep of ${cidr})`);
         return viaSweep;
       }
-      log.debug(`No host in ${subnet} answered /getZones on :${RAUMFELD_HTTP_PORT}.`);
+      log.debug(`No host in ${cidr} answered /getZones on :${RAUMFELD_HTTP_PORT}.`);
     }
     return undefined;
   }
 
   private static async discoverViaSsdp(log: Logging): Promise<string | undefined> {
-    log.debug('SSDP search for the Raumfeld host…');
-    const client = new SsdpClient();
-    const candidates = new Set<string>();
+    // One client per interface. node-ssdp's default socket follows the OS
+    // multicast route, which on a multi-homed host resolves to a single
+    // interface — an M-SEARCH sent there never reaches a host sitting on another
+    // NIC's subnet. Binding explicitly per interface searches all of them.
+    const names = localIPv4Interfaces().map((iface) => iface.name);
+    const targets: (string | undefined)[] = names.length ? [...new Set(names)] : [undefined];
+    log.debug(`SSDP search for the Raumfeld host on ${targets.length} interface(s)…`);
 
-    client.on('response', (_headers: Record<string, string>, _code: number, rinfo: { address: string }) => {
-      if (rinfo?.address) candidates.add(rinfo.address);
-    });
+    const candidates = new Set<string>();
+    const clients: InstanceType<typeof SsdpClient>[] = [];
+
+    for (const name of targets) {
+      try {
+        const client = name === undefined
+          ? new SsdpClient()
+          : new SsdpClient({ explicitSocketBind: true, interfaces: [name] });
+        // A NIC that can't join the multicast group (point-to-point tunnels, an
+        // interface that just went down) emits here; it must not take the search
+        // for the other interfaces down with it.
+        client.on('error', (err: Error) => log.debug(`SSDP socket error on ${name ?? 'default'}: ${err.message}`));
+        client.on('response', (_headers: Record<string, string>, _code: number, rinfo: { address: string }) => {
+          if (rinfo?.address) candidates.add(rinfo.address);
+        });
+        // Raumfeld hosts advertise a MediaServer; ssdp:all is the widest net.
+        client.search('urn:schemas-upnp-org:device:MediaServer:1');
+        client.search('ssdp:all');
+        clients.push(client);
+      } catch (err) {
+        log.debug(`SSDP could not bind to ${name ?? 'default'}: ${(err as Error).message}`);
+      }
+    }
 
     try {
-      // Raumfeld hosts advertise a MediaServer; ssdp:all is the widest net.
-      client.search('urn:schemas-upnp-org:device:MediaServer:1');
-      client.search('ssdp:all');
       await delay(3000);
 
       for (const address of candidates) {
@@ -145,7 +176,13 @@ export class RaumfeldClient {
       log.debug(`SSDP saw ${candidates.size} device(s) but none served /getZones on :${RAUMFELD_HTTP_PORT}.`);
       return undefined;
     } finally {
-      client.stop();
+      for (const client of clients) {
+        try {
+          client.stop();
+        } catch {
+          // stop() on a socket that never bound throws; nothing to clean up then.
+        }
+      }
     }
   }
 
@@ -585,6 +622,61 @@ export class RaumfeldClient {
 }
 
 // --- module-local helpers ---------------------------------------------------
+
+interface LocalInterface {
+  name: string;
+  address: string;
+  /** e.g. "10.168.11.26/24" — absent on platforms that don't report it. */
+  cidr?: string;
+}
+
+/** Every non-internal IPv4 interface, link-local (169.254/16) excluded. */
+function localIPv4Interfaces(): LocalInterface[] {
+  const found: LocalInterface[] = [];
+  for (const [name, addresses] of Object.entries(networkInterfaces())) {
+    for (const addr of addresses ?? []) {
+      // Node <18.4 reported family as the number 4; accept both spellings.
+      const isIPv4 = addr.family === 'IPv4' || (addr.family as unknown as number) === 4;
+      if (!isIPv4 || addr.internal) continue;
+      if (addr.address.startsWith('169.254.')) continue; // APIPA — nothing to find
+      found.push({ name, address: addr.address, cidr: addr.cidr ?? undefined });
+    }
+  }
+  return found;
+}
+
+/**
+ * Local IPv4 subnets worth sweeping, normalised to their network address and
+ * de-duplicated (two NICs on one LAN must not be swept twice). Blocks wider than
+ * /22 are dropped by `enumerateCidr` — sweeping them would mean 1000s of probes.
+ * Capped so a machine with many tunnels can't turn discovery into a long scan.
+ */
+function localSubnets(limit = 6): string[] {
+  const networks = new Set<string>();
+  for (const iface of localIPv4Interfaces()) {
+    if (!iface.cidr) continue;
+    const network = networkAddressOf(iface.cidr);
+    if (!network || !enumerateCidr(network)) continue;
+    networks.add(network);
+    if (networks.size >= limit) break;
+  }
+  return [...networks];
+}
+
+/** "10.168.11.26/24" -> "10.168.11.0/24"; undefined if malformed. */
+function networkAddressOf(cidr: string): string | undefined {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr.trim());
+  if (!m) return undefined;
+  const octets = [m[1], m[2], m[3], m[4]].map(Number);
+  const prefix = Number(m[5]);
+  if (octets.some((o) => o > 255) || prefix > 32) return undefined;
+
+  const base = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+  const size = 2 ** (32 - prefix);
+  const network = (base & (size === 2 ** 32 ? 0 : (~(size - 1) >>> 0))) >>> 0;
+  const dotted = [(network >>> 24) & 255, (network >>> 16) & 255, (network >>> 8) & 255, network & 255].join('.');
+  return `${dotted}/${prefix}`;
+}
 
 /**
  * Expand a CIDR into its usable host IPs (drops network + broadcast for /<31).
