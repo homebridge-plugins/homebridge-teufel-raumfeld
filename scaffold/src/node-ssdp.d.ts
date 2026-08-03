@@ -18,6 +18,7 @@ declare module 'node-ssdp' {
       event: 'response',
       listener: (headers: Record<string, string>, statusCode: number, rinfo: RemoteInfo) => void,
     ): this;
+    on(event: 'error', listener: (err: Error) => void): this;
   }
 
   export class Server extends EventEmitter {

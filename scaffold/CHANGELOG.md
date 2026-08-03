@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-08-03
+
+### Fixed
+- Auto-discovery now finds the host on machines with more than one network
+  interface (Wi-Fi + Ethernet, VLAN NICs, an active VPN tunnel). SSDP was sent
+  from a single default-bound socket, which the OS routes out whichever
+  interface owns the multicast route — so an M-SEARCH never reached speakers on
+  any other interface's subnet and discovery reported "No Raumfeld host found".
+  The search now runs one SSDP client per local IPv4 interface, bound
+  explicitly, and merges the responses.
+- When SSDP finds nothing and no `discoverySubnet` is configured, auto-discovery
+  now unicast-sweeps every local IPv4 subnet instead of giving up. Previously
+  the sweep only ran if `discoverySubnet` was set by hand, so the common
+  multi-homed case fell through both discovery paths. Subnets are normalised to
+  their network address, de-duplicated across NICs, capped, and blocks wider
+  than /22 plus 169.254 link-local addresses are skipped.
+
+### Changed
+- `discoverySubnet` is now documented as a rare escape hatch — needed only when
+  the speakers sit on a subnet Homebridge has no interface on, since local
+  subnets are scanned automatically.
+
 ## [0.3.2] - 2026-07-16
 
 ### Fixed
