@@ -22,6 +22,8 @@ export interface ReceiverCallbacks {
   onSessionStart(pcm: Readable): void;
   /** Fired after the stream has been idle past the silence timeout. */
   onSessionEnd(): void;
+  /** Fired when shairport-sync terminates without an explicit stop request. */
+  onUnexpectedExit(): void;
 }
 
 /** Milliseconds of no PCM before a session is considered ended. */
@@ -41,6 +43,8 @@ export class AirPlayReceiver {
     /** RTSP port; must be unique per concurrent receiver. */
     private readonly rtspPort: number,
     private readonly callbacks: ReceiverCallbacks,
+    /** AirPlay 1 pairing password; unset means anyone on the LAN may stream. */
+    private readonly password?: string,
   ) {}
 
   /** True if the configured shairport-sync binary runs and reports a version. */
@@ -61,7 +65,14 @@ export class AirPlayReceiver {
       '-o', 'stdout',           // raw PCM on stdout
       '--port', String(this.rtspPort),
     ];
-    this.log.debug(`AirPlay: spawning ${this.binaryPath} ${args.join(' ')}`);
+    // Without a password the receiver is open: any device on the LAN can push
+    // audio to this zone. popt accepts the `--password=<pw>` form as one argv
+    // element; there is no shell, so the value needs no quoting.
+    if (this.password) args.push(`--password=${this.password}`);
+    // Redact before logging — argv is already visible in `ps` to local users,
+    // but the Homebridge log is far more likely to be pasted into an issue.
+    const printableArgs = args.map((arg) => (arg.startsWith('--password=') ? '--password=***' : arg));
+    this.log.debug(`AirPlay: spawning ${this.binaryPath} ${printableArgs.join(' ')}`);
     const child = spawn(this.binaryPath, args);
     this.child = child;
 
@@ -72,14 +83,17 @@ export class AirPlayReceiver {
     });
     child.once('error', (err) => {
       this.log.error(`AirPlay[${this.name}] failed to start shairport-sync: ${err.message}`);
-      this.child = undefined;
     });
-    child.once('exit', (code, signal) => {
-      if (!this.stopped) {
+    // `close` follows both a normal exit and a spawn error, so there is one
+    // cleanup/restart path for every way the child can disappear.
+    child.once('close', (code, signal) => {
+      const unexpected = !this.stopped;
+      if (unexpected) {
         this.log.warn(`AirPlay[${this.name}] shairport-sync exited (code ${code}, signal ${signal}).`);
       }
       this.endSession();
-      this.child = undefined;
+      if (this.child === child) this.child = undefined;
+      if (unexpected) this.callbacks.onUnexpectedExit();
     });
   }
 

@@ -1,9 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Raumfeld</title>
 <style>
   /* ---- design tokens (handoff §Design Tokens) ---- */
   :root {
@@ -125,8 +119,6 @@
   .restart-note { text-align: center; font-size: 12px; color: var(--text-3); margin-top: 10px; }
   .empty { padding: 16px 14px; font-size: 13px; color: var(--text-3); }
 </style>
-</head>
-<body>
 <div class="card">
   <div class="header">
     <div class="app-icon">
@@ -137,7 +129,7 @@
     </div>
     <div>
       <div class="title">Raumfeld</div>
-      <div class="subtitle" id="hostSubtitle">v1.4.0 · host —</div>
+      <div class="subtitle" id="hostSubtitle">host —</div>
     </div>
     <div class="pill error" id="statusPill"><span class="dot"></span><span id="statusText">Disconnected</span></div>
   </div>
@@ -179,13 +171,9 @@
         <div class="row">
           <span class="grow">
             <span class="label">Enable AirPlay streaming</span>
-            <span class="subtitle">Expose zones as AirPlay 2 receivers</span>
+            <span class="subtitle">Expose zones as separate AirPlay receivers</span>
           </span>
           <label class="switch accent"><input type="checkbox" id="airplayEnabled" checked><span class="track"></span><span class="knob"></span></label>
-        </div>
-        <div class="row">
-          <span class="label">Audio buffer</span>
-          <span class="value"><input type="number" id="bufferMs" min="50" max="2000" step="10" value="220">&nbsp;ms</span>
         </div>
       </div>
     </div>
@@ -236,7 +224,6 @@ async function init() {
   $('host').value = config.host ?? '';
   $('discoverySubnet').value = config.discoverySubnet ?? '';
   $('airplayEnabled').checked = config.airplay?.enabled !== false;
-  $('bufferMs').value = config.airplay?.bufferMs ?? 220;
   $('exposeGroups').checked = config.multiroom?.exposeGroups !== false;
   $('syncGroupVolume').checked = config.multiroom?.syncGroupVolume !== false;
 
@@ -262,7 +249,7 @@ async function refreshLive() {
     } catch (e) { homebridge.toast.error(String(e.message ?? e), 'Raumfeld'); }
   }
 
-  $('hostSubtitle').textContent = 'v1.4.0 · host ' + (host || '—');
+  $('hostSubtitle').textContent = 'host ' + (host || '—');
   if (!host) { setPill(false, 'No host'); renderDevices([]); renderZones([]); return; }
 
   setPill(null, 'Connecting…');
@@ -342,9 +329,10 @@ async function save() {
     config.autoDiscover = $('autoDiscover').checked;
     config.host = $('host').value.trim() || undefined;
     config.discoverySubnet = $('discoverySubnet').value.trim() || undefined;
-    // Merge — the UI only edits enabled/bufferMs. Preserve advanced fields
+    // Merge — the UI only edits enabled. Preserve advanced fields
     // (binaryPath/streamHost/streamPort) that have no control on this form.
-    config.airplay = { ...config.airplay, enabled: $('airplayEnabled').checked, bufferMs: Number($('bufferMs').value) };
+    config.airplay = { ...config.airplay, enabled: $('airplayEnabled').checked };
+    delete config.airplay.bufferMs;
     config.multiroom = { exposeGroups: $('exposeGroups').checked, syncGroupVolume: $('syncGroupVolume').checked };
     if (devices.length) config.devices = devices;
 
@@ -364,5 +352,3 @@ function cssEsc(s) { return String(s ?? '').replace(/["\\]/g, '\\$&'); }
 homebridge.showSpinner();
 init().finally(() => homebridge.hideSpinner());
 </script>
-</body>
-</html>

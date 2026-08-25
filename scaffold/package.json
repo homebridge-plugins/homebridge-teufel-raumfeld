@@ -1,7 +1,7 @@
 {
   "displayName": "Homebridge Teufel Raumfeld",
   "name": "homebridge-teufel-raumfeld",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Control Teufel Raumfeld multiroom speakers from Apple HomeKit, with AirPlay streaming from iOS.",
   "license": "MIT",
   "author": "Alexander Peither",
@@ -31,6 +31,7 @@
     "watch": "tsc --watch",
     "dev": "nodemon",
     "lint": "eslint src",
+    "test": "npm run build && node --test test/*.test.mjs",
     "prepublishOnly": "npm run lint && npm run build"
   },
   "keywords": [
@@ -44,8 +45,7 @@
   ],
   "dependencies": {
     "@homebridge/plugin-ui-utils": "^1.0.3",
-    "fast-xml-parser": "^4.4.1",
-    "node-ssdp": "^4.0.1"
+    "fast-xml-parser": "^5.11.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
@@ -57,6 +57,6 @@
     "typescript": "^5.5.0",
     "typescript-eslint": "^8.10.0"
   },
-  "//dependencies-note": "SOAP is hand-rolled over global fetch (see src/raumfeldClient.ts); /getZones XML is parsed with fast-xml-parser. For a production AirPlay path, add an airtunes2 / shairport-sync bridge where src/airplayBridge.ts spawns the receiver.",
+  "//dependencies-note": "Kept deliberately small. SOAP is hand-rolled over global fetch and SSDP M-SEARCH over node:dgram (src/ssdpClient.ts, replacing the unmaintained node-ssdp and its vulnerable `ip` transitive dep); only /getZones and UPnP device-description XML need fast-xml-parser. AirPlay reception is an external shairport-sync process spawned by src/airplayBridge.ts, not a library.",
   "funding": []
 }

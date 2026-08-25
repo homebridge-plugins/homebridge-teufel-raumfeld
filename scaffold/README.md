@@ -23,7 +23,7 @@ npm install -g homebridge-teufel-raumfeld
 - **Native Home tiles** — each room appears as a HomeKit speaker with volume, mute and play/pause.
 - **Multiroom groups** — groups you make in the Raumfeld app show up as one accessory; member rooms are controlled together (see below).
 - **Per-zone volume** — HomeKit volume maps to Raumfeld volume; group volume can be kept in sync.
-- **AirPlay 2 streaming** *(optional)* — advertise zones as AirPlay receivers to stream straight from iOS.
+- **AirPlay streaming** *(optional)* — advertise zones as AirPlay receivers to stream straight from iOS.
 - **Siri** — “Hey Siri, set the Kitchen to 30%.”
 - **Cross-subnet friendly** — resolves speakers via the host’s HTTP API, so Homebridge and the speakers can live on different VLANs.
 
@@ -40,8 +40,8 @@ with the plugin), or add a platform block to `config.json`:
       "name": "Raumfeld",
       "autoDiscover": true,
       "host": "192.168.1.50",
-      "pollInterval": 5,
-      "airplay":   { "enabled": true, "bufferMs": 220 },
+      "pollInterval": 30,
+      "airplay":   { "enabled": true },
       "multiroom": { "exposeGroups": true, "syncGroupVolume": true }
     }
   ]
@@ -52,10 +52,10 @@ with the plugin), or add a platform block to `config.json`:
 |---|---|---|
 | `autoDiscover` | `true` | Find the Raumfeld host via SSDP. Turn off to use `host`. |
 | `host` | — | IP/hostname of the Raumfeld host. Required when `autoDiscover` is off, or when Homebridge and the speakers are on different subnets (SSDP can’t cross subnets). |
-| `pollInterval` | `2` | Safety-net poll seconds; live changes arrive instantly via the host long-poll. |
+| `pollInterval` | `30` | Safety-net poll seconds (30–60); live group changes arrive instantly via the host long-poll. |
 | `airplay.enabled` | `true` | Advertise zones as AirPlay receivers. Requires `shairport-sync` on the host — see [AirPlay streaming](#airplay-streaming). |
-| `airplay.bufferMs` | `220` | AirPlay audio buffer. |
 | `airplay.binaryPath` | `shairport-sync` | Path to the `shairport-sync` binary. Default finds it on `PATH`. |
+| `airplay.password` | — | Password iOS must enter to stream to these zones. **Blank leaves every zone an open AirPlay receiver** — see [AirPlay streaming](#airplay-streaming). |
 | `airplay.streamHost` | auto | IP/hostname the speakers use to reach this Homebridge machine's audio stream. Auto-detected; set it when Homebridge and the speakers are on **different subnets**. |
 | `airplay.streamPort` | `8099` | TCP port for the local audio stream the speakers pull from. |
 | `multiroom.exposeGroups` | `true` | Expose active Raumfeld groups as accessories. |
@@ -84,6 +84,22 @@ Then in `config.json`, `airplay.enabled: true` (the default). Zones appear in th
 iOS AirPlay / Control-Center output picker. Selecting one points that Raumfeld
 zone at the plugin's stream and starts playback; a grouped zone plays through its
 lead renderer and Raumfeld keeps the member speakers in sync.
+
+### Set a password
+
+By default the receivers are **open**: any device on your network — a guest on
+the same Wi-Fi, a compromised IoT gadget — can play audio through your speakers
+without authenticating. Set `airplay.password` to require a password in the iOS
+picker:
+
+```json
+"airplay": { "enabled": true, "password": "your-password" }
+```
+
+The password is handed to `shairport-sync` as a command-line argument, so it is
+visible to other local users of the Homebridge host (via `ps`). It is redacted
+in the Homebridge log. If your host is shared with people you don't trust at the
+OS level, that tradeoff is worth knowing about.
 
 Notes and limits:
 

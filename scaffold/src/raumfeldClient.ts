@@ -1,11 +1,9 @@
 import type { Logging } from 'homebridge';
 import { networkInterfaces } from 'node:os';
-import { setTimeout as delay } from 'node:timers/promises';
 import { XMLParser } from 'fast-xml-parser';
-import ssdp from 'node-ssdp';
+import { isPrivateIPv4, privateHttpUrl } from './net.js';
+import { ssdpSearch } from './ssdpClient.js';
 import { RAUMFELD_HTTP_PORT } from './settings.js';
-
-const { Client: SsdpClient } = ssdp;
 
 export interface RaumfeldRoom {
   udn: string;          // room udn — stable identity for the HomeKit accessory + config matching
@@ -43,6 +41,9 @@ interface ResolvedRenderer {
   avTransportUrl?: string;
   modelName?: string;
 }
+
+/** Floor between on-demand /listDevices refreshes triggered by an unknown udn. */
+const LOCATION_REFRESH_MIN_INTERVAL_MS = 10000;
 
 const SOAP_SERVICE = {
   rendering: 'urn:schemas-upnp-org:service:RenderingControl:1',
@@ -93,6 +94,10 @@ export class RaumfeldClient {
   private locationTimer?: NodeJS.Timeout;
   private lastUpdateId?: string;
   private disposed = false;
+  /** Locations already reported as blocked, so the log isn't flooded each pass. */
+  private readonly warnedLocations = new Set<string>();
+  /** When /listDevices was last fetched, to throttle on-demand refreshes. */
+  private lastLocationRefresh = 0;
 
   constructor(
     private readonly host: string,
@@ -132,58 +137,22 @@ export class RaumfeldClient {
   }
 
   private static async discoverViaSsdp(log: Logging): Promise<string | undefined> {
-    // One client per interface. node-ssdp's default socket follows the OS
-    // multicast route, which on a multi-homed host resolves to a single
-    // interface — an M-SEARCH sent there never reaches a host sitting on another
-    // NIC's subnet. Binding explicitly per interface searches all of them.
-    const names = localIPv4Interfaces().map((iface) => iface.name);
-    const targets: (string | undefined)[] = names.length ? [...new Set(names)] : [undefined];
-    log.debug(`SSDP search for the Raumfeld host on ${targets.length} interface(s)…`);
+    // One socket per interface address. The OS multicast route resolves to a
+    // single interface on a multi-homed host, so an M-SEARCH sent there never
+    // reaches a host sitting on another NIC's subnet; binding each explicitly
+    // searches all of them.
+    const addresses = localIPv4Interfaces().map((iface) => iface.address);
+    log.debug(`SSDP search for the Raumfeld host on ${addresses.length || 1} interface(s)…`);
 
-    const candidates = new Set<string>();
-    const clients: InstanceType<typeof SsdpClient>[] = [];
-
-    for (const name of targets) {
-      try {
-        const client = name === undefined
-          ? new SsdpClient()
-          : new SsdpClient({ explicitSocketBind: true, interfaces: [name] });
-        // A NIC that can't join the multicast group (point-to-point tunnels, an
-        // interface that just went down) emits here; it must not take the search
-        // for the other interfaces down with it.
-        client.on('error', (err: Error) => log.debug(`SSDP socket error on ${name ?? 'default'}: ${err.message}`));
-        client.on('response', (_headers: Record<string, string>, _code: number, rinfo: { address: string }) => {
-          if (rinfo?.address) candidates.add(rinfo.address);
-        });
-        // Raumfeld hosts advertise a MediaServer; ssdp:all is the widest net.
-        client.search('urn:schemas-upnp-org:device:MediaServer:1');
-        client.search('ssdp:all');
-        clients.push(client);
-      } catch (err) {
-        log.debug(`SSDP could not bind to ${name ?? 'default'}: ${(err as Error).message}`);
+    const candidates = await ssdpSearch({ addresses, timeoutMs: 3000, log });
+    for (const address of candidates) {
+      if (await RaumfeldClient.probe(address)) {
+        log.info(`Discovered Raumfeld host at ${address}`);
+        return address;
       }
     }
-
-    try {
-      await delay(3000);
-
-      for (const address of candidates) {
-        if (await RaumfeldClient.probe(address)) {
-          log.info(`Discovered Raumfeld host at ${address}`);
-          return address;
-        }
-      }
-      log.debug(`SSDP saw ${candidates.size} device(s) but none served /getZones on :${RAUMFELD_HTTP_PORT}.`);
-      return undefined;
-    } finally {
-      for (const client of clients) {
-        try {
-          client.stop();
-        } catch {
-          // stop() on a socket that never bound throws; nothing to clean up then.
-        }
-      }
-    }
+    log.debug(`SSDP saw ${candidates.length} device(s) but none served /getZones on :${RAUMFELD_HTTP_PORT}.`);
+    return undefined;
   }
 
   /**
@@ -194,7 +163,10 @@ export class RaumfeldClient {
   private static async sweepSubnet(cidr: string, log: Logging): Promise<string | undefined> {
     const hosts = enumerateCidr(cidr);
     if (!hosts) {
-      log.warn(`Discovery subnet "${cidr}" is not a valid CIDR (expected e.g. 192.168.20.0/24, prefix /22–/30).`);
+      log.warn(
+        `Discovery subnet "${cidr}" is not a sweepable CIDR. Expected a private block with prefix `
+        + '/22–/30, e.g. 192.168.20.0/24 (10/8, 172.16/12, 192.168/16 or 100.64/10).',
+      );
       return undefined;
     }
     const CONCURRENCY = 32;
@@ -209,8 +181,9 @@ export class RaumfeldClient {
     return undefined;
   }
 
-  /** True if `address` answers the Raumfeld zone API. */
+  /** True if `address` answers the Raumfeld zone API. Non-private addresses are never probed. */
   private static async probe(address: string, timeoutMs = 2000): Promise<boolean> {
+    if (!isPrivateIPv4(address)) return false;
     try {
       const res = await fetchWithTimeout(`http://${address}:${RAUMFELD_HTTP_PORT}/getZones`, {}, timeoutMs);
       void res.body?.cancel(); // probe only needs the status; release the socket
@@ -499,8 +472,11 @@ export class RaumfeldClient {
    * enumerates every speaker, connector and per-zone virtual renderer with an
    * HTTP location that is reachable across subnets (no SSDP multicast needed).
    */
-  private async refreshDeviceLocations(): Promise<void> {
+  private async refreshDeviceLocations({ throttled = false } = {}): Promise<void> {
     if (this.disposed) return;
+    const now = Date.now();
+    if (throttled && now - this.lastLocationRefresh < LOCATION_REFRESH_MIN_INTERVAL_MS) return;
+    this.lastLocationRefresh = now;
     const res = await fetchWithTimeout(`${this.baseUrl}/listDevices`, {}, 5000);
     if (!res.ok) {
       void res.body?.cancel();
@@ -511,6 +487,18 @@ export class RaumfeldClient {
       const udn = attr(dev, 'udn');
       const location = attr(dev, 'location');
       if (!udn || !location) continue;
+      // These URLs come off the network. A spoofed or compromised host could
+      // point them at the Homebridge admin API on localhost or at the public
+      // internet, and we would dutifully fetch and later POST SOAP to them.
+      if (!privateHttpUrl(location)) {
+        // A blocked device never lands in `locations`, so this path is retried on
+        // every pass — warn once per location instead of flooding the log.
+        if (!this.warnedLocations.has(location)) {
+          this.warnedLocations.add(location);
+          this.log.warn(`Ignoring device ${udn}: description URL "${location}" is not a private HTTP address.`);
+        }
+        continue;
+      }
       // A renderer that moved (new IP/description URL) must drop its memoised
       // control endpoints, otherwise writes keep hitting the stale address.
       if (this.locations.get(udn) !== location) this.renderers.delete(udn);
@@ -523,8 +511,11 @@ export class RaumfeldClient {
     const cached = this.renderers.get(rendererUdn);
     if (cached) return cached;
 
-    // A newly-appeared renderer may not be in the map yet — refresh once.
-    if (!this.locations.has(rendererUdn)) await this.refreshDeviceLocations();
+    // A newly-appeared renderer may not be in the map yet — refresh once. A udn
+    // that stays unresolvable (blocked location, or a device the host stopped
+    // listing) would otherwise re-fetch /listDevices on every enrich pass, so
+    // the on-demand refresh is throttled.
+    if (!this.locations.has(rendererUdn)) await this.refreshDeviceLocations({ throttled: true });
     const location = this.locations.get(rendererUdn);
     if (!location) return undefined;
 
@@ -538,9 +529,16 @@ export class RaumfeldClient {
     // Relative controlURLs resolve against <URLBase> when the description
     // provides one, else against the description's own URL (which carries the
     // correct path) — NOT the bare origin, which drops any base path.
-    const urlBase = firstDefined(doc.root?.URLBase, doc.URLBase) as string | undefined;
-    const resolveBase = urlBase ? new URL(urlBase).toString() : location;
-    const baseUrl = urlBase ? new URL(urlBase).origin : new URL(location).origin;
+    // A malformed or non-private <URLBase> must not throw out of here (that would
+    // abort a control write); fall back to the already-validated location.
+    const rawUrlBase = firstDefined(doc.root?.URLBase, doc.URLBase) as string | undefined;
+    const urlBase = rawUrlBase ? privateHttpUrl(String(rawUrlBase)) : undefined;
+    if (rawUrlBase && !urlBase && !this.warnedLocations.has(String(rawUrlBase))) {
+      this.warnedLocations.add(String(rawUrlBase));
+      this.log.warn(`Ignoring <URLBase> "${rawUrlBase}" for ${rendererUdn}: not a private HTTP address.`);
+    }
+    const resolveBase = urlBase ? urlBase.toString() : location;
+    const baseUrl = urlBase ? urlBase.origin : new URL(location).origin;
 
     const resolved: ResolvedRenderer = {
       location,
@@ -551,7 +549,22 @@ export class RaumfeldClient {
       const type = String(svc.serviceType ?? '');
       const controlUrl = String(svc.controlURL ?? '');
       if (!controlUrl) continue;
-      const abs = new URL(controlUrl, resolveBase).toString();
+      // A controlURL may be absolute, so validating the description's location
+      // alone is not enough — re-check the resolved target before we ever POST
+      // a SOAP body to it.
+      let abs: string;
+      try {
+        abs = new URL(controlUrl, resolveBase).toString();
+      } catch {
+        continue;
+      }
+      if (!privateHttpUrl(abs)) {
+        if (!this.warnedLocations.has(abs)) {
+          this.warnedLocations.add(abs);
+          this.log.warn(`Ignoring ${type} control URL "${abs}" for ${rendererUdn}: not a private HTTP address.`);
+        }
+        continue;
+      }
       if (type === SOAP_SERVICE.rendering) resolved.renderingControlUrl = abs;
       if (type === SOAP_SERVICE.avTransport) resolved.avTransportUrl = abs;
     }
@@ -680,8 +693,9 @@ function networkAddressOf(cidr: string): string | undefined {
 
 /**
  * Expand a CIDR into its usable host IPs (drops network + broadcast for /<31).
- * Returns undefined for malformed input or an over-wide prefix (< /22), which
- * would balloon the sweep. Supports /22../32.
+ * Returns undefined for malformed input, an over-wide prefix (< /22) that would
+ * balloon the sweep, or a block outside private address space — a home plugin
+ * has no business port-scanning the public internet. Supports /22../32.
  */
 function enumerateCidr(cidr: string): string[] | undefined {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr.trim());
@@ -689,6 +703,7 @@ function enumerateCidr(cidr: string): string[] | undefined {
   const octets = [m[1], m[2], m[3], m[4]].map(Number);
   const prefix = Number(m[5]);
   if (octets.some((o) => o > 255) || prefix < 22 || prefix > 32) return undefined;
+  if (!isPrivateIPv4(octets.join('.'))) return undefined;
 
   const base = ((octets[0] << 24) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
   const size = 2 ** (32 - prefix);
@@ -704,6 +719,33 @@ function enumerateCidr(cidr: string): string[] | undefined {
   return hosts;
 }
 
+/**
+ * Ceiling for any body we read from the network. A zone config or device
+ * description is a few KiB; without a cap, a hostile or malfunctioning host can
+ * stream indefinitely into memory, since the timeouts below bound *stalls*, not
+ * a body that keeps arriving quickly.
+ */
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+/** Read a response body as text, aborting once it exceeds `maxBytes`. */
+async function readTextCapped(res: Response, maxBytes: number): Promise<string> {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`Response body from ${res.url || 'host'} exceeded ${maxBytes} bytes`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function fetchWithTimeout(
   url: string,
   init: Parameters<typeof fetch>[1],
@@ -715,7 +757,11 @@ async function fetchWithTimeout(
   const headerTimer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
-    res = await fetch(url, { ...init, signal: controller.signal });
+    // `redirect: 'error'` is a security control, not a preference: following a
+    // 3xx would let a host that passed the private-address check hand us off to
+    // localhost or the public internet afterwards. Nothing in the Raumfeld or
+    // UPnP surface legitimately redirects.
+    res = await fetch(url, { redirect: 'error', ...init, signal: controller.signal });
   } finally {
     clearTimeout(headerTimer);
   }
@@ -730,8 +776,8 @@ async function fetchWithTimeout(
         clearTimeout(bodyTimer);
       }
     };
-  res.text = wrap(res.text.bind(res));
-  res.json = wrap(res.json.bind(res));
+  res.text = wrap(() => readTextCapped(res, MAX_BODY_BYTES));
+  res.json = wrap(async () => JSON.parse(await readTextCapped(res, MAX_BODY_BYTES)) as unknown);
   res.arrayBuffer = wrap(res.arrayBuffer.bind(res));
   return res;
 }
