@@ -2,6 +2,7 @@
   "pluginAlias": "Raumfeld",
   "pluginType": "platform",
   "singular": true,
+  "customUi": true,
   "headerDisplay": "Control Teufel Raumfeld multiroom speakers from Apple HomeKit, with AirPlay streaming from iOS. Zone groups are created in the Raumfeld app and mirrored here.",
   "footerDisplay": "Restart Homebridge after saving. Groups are imported live from the Raumfeld host; members are locked in HomeKit while a group is active.",
   "schema": {
@@ -39,10 +40,11 @@
         }
       },
       "pollInterval": {
-        "title": "Poll interval (seconds)",
+        "title": "Safety-net poll interval (seconds)",
+        "description": "Volume/play-state refresh interval. Group changes arrive immediately through long-polling.",
         "type": "integer",
-        "default": 2,
-        "minimum": 1,
+        "default": 30,
+        "minimum": 30,
         "maximum": 60
       },
       "airplay": {
@@ -51,22 +53,24 @@
         "properties": {
           "enabled": {
             "title": "Enable AirPlay streaming",
-            "description": "Expose zones as AirPlay 2 receivers for iOS.",
+            "description": "Expose zones as AirPlay receivers for iOS. Each zone uses a separate AirPlay 1 receiver.",
             "type": "boolean",
             "default": true
-          },
-          "bufferMs": {
-            "title": "Audio buffer (ms)",
-            "type": "integer",
-            "default": 220,
-            "minimum": 50,
-            "maximum": 2000
           },
           "binaryPath": {
             "title": "shairport-sync path",
             "description": "Path to the shairport-sync binary that provides the AirPlay receiver. Must be installed on the Homebridge host. Leave as the default to find it on PATH.",
             "type": "string",
             "default": "shairport-sync",
+            "condition": {
+              "functionBody": "return model.airplay && model.airplay.enabled !== false;"
+            }
+          },
+          "password": {
+            "title": "AirPlay password",
+            "description": "Password iOS must enter to stream to these zones. Leave blank and every zone is an OPEN AirPlay receiver — any device on your network can play audio through your speakers. Note: the value is passed to shairport-sync on its command line, so it is visible to other local users of the Homebridge host.",
+            "type": "string",
+            "placeholder": "none (open receivers)",
             "condition": {
               "functionBody": "return model.airplay && model.airplay.enabled !== false;"
             }

@@ -4,6 +4,60 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-08-25
+
+### Security
+- Fix a remote crash in the AirPlay stream server. A malformed request-target
+  such as `GET //[` threw `TypeError: Invalid URL` straight out of the request
+  callback, which Node surfaces as an uncaught exception — taking the whole
+  Homebridge process down. The endpoint is bound to every interface and this
+  needed no token, so any device on the network could stop the bridge with one
+  request. Malformed targets now return 400, and the handler is wrapped so no
+  future throw can escape it.
+- Cap every response body read from the network at 8 MiB. The existing timeouts
+  bound stalled transfers but not a body that keeps arriving quickly, so a
+  hostile or malfunctioning host could stream unbounded data into memory via
+  `/getZones`, `/listDevices`, or a device description.
+- Add `airplay.password`. Without it every zone is advertised as an **open**
+  AirPlay receiver, so any device on the network can play audio through the
+  speakers. The plugin now warns once at startup when no password is set. The
+  value is passed to `shairport-sync` on its command line and is therefore
+  visible to other local users of the Homebridge host.
+- Restrict every URL learned from the network — device `location`s from
+  `/listDevices`, `<URLBase>`, and each service `controlURL` — to plain HTTP(S)
+  on a private address, and stop following redirects. A spoofed or compromised
+  Raumfeld host could previously name any URL and have the plugin fetch it or
+  POST SOAP to it, including the Homebridge admin API on loopback and cloud
+  metadata endpoints.
+- Confine discovery sweeps to private address space (10/8, 172.16/12,
+  192.168/16, 100.64/10). The custom UI's `/discover` endpoint accepted any
+  CIDR, which turned it into a 1022-host concurrent scanner aimable at the
+  public internet.
+- Rotate each zone's AirPlay stream token per session instead of once per
+  process. Renderers echo `CurrentURI` back to unauthenticated callers on the
+  LAN, so a leaked token previously stayed valid for the plugin's lifetime.
+- Protect each live AirPlay PCM URL with a random per-zone token, reject
+  malformed paths without throwing, refuse requests when no source is active,
+  and cap overlapping renderer connections per zone.
+
+### Changed
+- Replace `node-ssdp` with a ~100-line built-in M-SEARCH client
+  (`src/ssdpClient.ts`). `node-ssdp` is unmaintained and pulled in `ip`
+  (GHSA-2p57-rm9w-gvfp, high); npm's suggested remedy for that advisory is a
+  downgrade to `node-ssdp` 1.0.0. Multi-interface behaviour is unchanged.
+- Upgrade `fast-xml-parser` to 5.x (GHSA-gh4j-gqv2-49f6). The plugin only ever
+  used `XMLParser`, never the affected `XMLBuilder`. The published package now
+  reports no known vulnerabilities.
+
+### Fixed
+- Enable the bundled custom Homebridge UI with `customUi: true` and bound its
+  response-body reads with the same deadline as the header request.
+- Retry the AirPlay stream server after a failed bind and restart an unexpected
+  `shairport-sync` exit while its target still exists.
+- Make the documented safety-net poll interval match its actual 30–60 second
+  range. Remove the unused `airplay.bufferMs` setting and inaccurate AirPlay 2
+  labels; each advertised zone intentionally uses an AirPlay 1 receiver.
+
 ## [0.3.3] - 2026-08-03
 
 ### Fixed

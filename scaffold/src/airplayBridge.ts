@@ -16,16 +16,18 @@ export interface AirPlayTarget {
 
 export interface AirPlayOptions {
   enabled: boolean;
-  bufferMs: number;
   /** shairport-sync binary providing the AirPlay receiver. */
   binaryPath: string;
   /** Host/IP the speakers use to reach our stream server; auto-detect when unset. */
   streamHost?: string;
   streamPort: number;
+  /** AirPlay 1 password. Unset leaves every zone open to any device on the LAN. */
+  password?: string;
 }
 
 /** Base RTSP port; each concurrent receiver gets base + index. */
 const RTSP_PORT_BASE = 5000;
+const RECEIVER_RESTART_DELAY_MS = 5000;
 
 interface Session {
   target: AirPlayTarget;
@@ -51,8 +53,10 @@ export class AirPlayBridge {
   private readonly sessions = new Map<string, Session>();
   private readonly streamServer: AirPlayStreamServer;
   private available?: boolean;
-  private serverStarted = false;
   private usedPorts = new Set<number>();
+  private desiredTargets = new Map<string, AirPlayTarget>();
+  private readonly restartTimers = new Map<string, NodeJS.Timeout>();
+  private stopped = false;
 
   constructor(
     private readonly log: Logging,
@@ -63,14 +67,28 @@ export class AirPlayBridge {
   }
 
   /** Reconcile advertised receivers with the current set of zones. */
-  syncTargets(targets: AirPlayTarget[]): void {
+  async syncTargets(targets: AirPlayTarget[]): Promise<void> {
+    if (this.stopped) return;
     if (!this.options.enabled || !this.ensureAvailable()) {
+      this.desiredTargets.clear();
       this.stopAll();
+      this.streamServer.stop();
       return;
     }
-    void this.ensureServer();
 
     const wanted = new Map(targets.map((t) => [t.zoneId, t]));
+    this.desiredTargets = wanted;
+    try {
+      await this.streamServer.start();
+    } catch (err) {
+      this.stopAll();
+      this.log.error(`AirPlay: stream server failed to start: ${(err as Error).message}`);
+      return;
+    }
+    if (this.stopped) {
+      this.streamServer.stop();
+      return;
+    }
 
     // Drop receivers for zones that vanished.
     for (const [zoneId, session] of this.sessions) {
@@ -89,20 +107,22 @@ export class AirPlayBridge {
   }
 
   stop(): void {
+    this.stopped = true;
+    this.desiredTargets.clear();
     this.stopAll();
     this.streamServer.stop();
-    this.serverStarted = false;
   }
 
   private startSession(target: AirPlayTarget): void {
     const rtspPort = this.claimPort();
     const receiver = new AirPlayReceiver(this.log, this.options.binaryPath, target.name, rtspPort, {
       onSessionStart: (pcm) => {
+        this.cancelRestart(target.zoneId);
         const session = this.sessions.get(target.zoneId);
         if (!session) return;
         this.streamServer.setSource(target.zoneId, pcm);
         const url = this.streamServer.urlFor(target.zoneId);
-        this.log.debug(`AirPlay: routing "${session.target.name}" -> ${session.target.rendererUdn} via ${url}`);
+        this.log.debug(`AirPlay: routing "${session.target.name}" -> ${session.target.rendererUdn}.`);
         this.playOnRenderer(session.target, url).catch((err) =>
           this.log.error(`AirPlay: failed to start playback on "${session.target.name}": ${(err as Error).message}`));
       },
@@ -113,12 +133,14 @@ export class AirPlayBridge {
         this.client.setPlayState(session.target.rendererUdn, 2) // 2 = STOP
           .catch((err) => this.log.debug(`AirPlay: stop on "${session.target.name}" failed: ${(err as Error).message}`));
       },
-    });
+      onUnexpectedExit: () => this.receiverExited(target.zoneId, receiver),
+    }, this.options.password);
 
+    this.cancelRestart(target.zoneId);
     this.streamServer.register(target.zoneId);
     this.sessions.set(target.zoneId, { target, receiver, rtspPort });
     receiver.start();
-    this.log.info(`AirPlay: advertising "${target.name}" (buffer ${this.options.bufferMs} ms).`);
+    this.log.info(`AirPlay: advertising "${target.name}".`);
   }
 
   private async playOnRenderer(target: AirPlayTarget, url: string): Promise<void> {
@@ -127,6 +149,7 @@ export class AirPlayBridge {
   }
 
   private teardown(zoneId: string, session: Session): void {
+    this.cancelRestart(zoneId);
     session.receiver.stop();
     this.streamServer.unregister(zoneId);
     this.usedPorts.delete(session.rtspPort);
@@ -134,6 +157,7 @@ export class AirPlayBridge {
   }
 
   private stopAll(): void {
+    for (const zoneId of this.restartTimers.keys()) this.cancelRestart(zoneId);
     for (const [zoneId, session] of this.sessions) this.teardown(zoneId, session);
     this.sessions.clear();
     this.usedPorts.clear();
@@ -149,20 +173,40 @@ export class AirPlayBridge {
           + 'AirPlay targets. Install shairport-sync on the Homebridge host, set airplay.binaryPath, '
           + 'or set airplay.enabled=false to silence this.',
         );
+      } else if (!this.options.password) {
+        this.log.warn(
+          'AirPlay: no airplay.password is set, so every zone is advertised as an OPEN AirPlay '
+          + 'receiver — any device on this network can play audio through your speakers. Set '
+          + 'airplay.password to require a password.',
+        );
       }
     }
     return this.available;
   }
 
-  private async ensureServer(): Promise<void> {
-    if (this.serverStarted) return;
-    this.serverStarted = true;
-    try {
-      await this.streamServer.start();
-    } catch (err) {
-      this.serverStarted = false;
-      this.log.error(`AirPlay: stream server failed to start: ${(err as Error).message}`);
-    }
+  private receiverExited(zoneId: string, receiver: AirPlayReceiver): void {
+    const session = this.sessions.get(zoneId);
+    if (!session || session.receiver !== receiver) return;
+    this.streamServer.clearSource(zoneId);
+    this.sessions.delete(zoneId);
+    this.usedPorts.delete(session.rtspPort);
+
+    if (this.stopped || !this.desiredTargets.has(zoneId)) return;
+    this.log.warn(`AirPlay: receiver for "${session.target.name}" will restart in ${RECEIVER_RESTART_DELAY_MS} ms.`);
+    const timer = setTimeout(() => {
+      this.restartTimers.delete(zoneId);
+      const target = this.desiredTargets.get(zoneId);
+      if (!target || this.stopped || this.sessions.has(zoneId)) return;
+      this.startSession(target);
+    }, RECEIVER_RESTART_DELAY_MS);
+    timer.unref?.();
+    this.restartTimers.set(zoneId, timer);
+  }
+
+  private cancelRestart(zoneId: string): void {
+    const timer = this.restartTimers.get(zoneId);
+    if (timer) clearTimeout(timer);
+    this.restartTimers.delete(zoneId);
   }
 
   private claimPort(): number {

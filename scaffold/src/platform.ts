@@ -20,7 +20,7 @@ export interface RaumfeldConfig extends PlatformConfig {
   host?: string;
   discoverySubnet?: string;
   pollInterval?: number;
-  airplay?: { enabled?: boolean; bufferMs?: number; binaryPath?: string; streamHost?: string; streamPort?: number };
+  airplay?: { enabled?: boolean; binaryPath?: string; streamHost?: string; streamPort?: number; password?: string };
   multiroom?: { exposeGroups?: boolean; syncGroupVolume?: boolean };
   devices?: Array<{ udn: string; name: string; model: string; exposed: boolean }>;
 }
@@ -101,10 +101,10 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
 
     this.airplay = new AirPlayBridge(this.log, this.client, {
       enabled: this.config.airplay?.enabled !== false,
-      bufferMs: this.config.airplay?.bufferMs ?? 220,
       binaryPath: this.config.airplay?.binaryPath ?? 'shairport-sync',
       streamHost: this.config.airplay?.streamHost,
       streamPort: this.config.airplay?.streamPort ?? 8099,
+      password: this.config.airplay?.password?.trim() || undefined,
     });
 
     this.running = true;
@@ -117,7 +117,7 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
 
     // Safety-net poll (the long-poll above does the real-time work). Kept
     // infrequent so we don't hammer the host; honours a larger pollInterval.
-    const safetyNetSeconds = Math.max(30, this.config.pollInterval ?? 2);
+    const safetyNetSeconds = Math.min(60, Math.max(30, this.config.pollInterval ?? 30));
     this.pollTimer = setInterval(() => void this.safeSync(), safetyNetSeconds * 1000);
   }
 
@@ -219,7 +219,7 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
     this.prune(seen);
 
     // 5. AirPlay.
-    this.airplay?.syncTargets(airplayTargets);
+    await this.airplay?.syncTargets(airplayTargets);
   }
 
   /** Remove accessories not present in this sync pass (ungrouped/hidden/gone). */
