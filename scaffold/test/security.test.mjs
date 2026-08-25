@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import { AirPlayStreamServer } from '../dist/airplayStreamServer.js';
 import { isPrivateHost, isPrivateIPv4, privateHttpUrl } from '../dist/net.js';
+import { RaumfeldClient } from '../dist/raumfeldClient.js';
+import { RAUMFELD_HTTP_PORT } from '../dist/settings.js';
 import { ssdpSearch } from '../dist/ssdpClient.js';
 
 const log = { info() {}, debug() {}, warn() {}, error() {} };
@@ -87,6 +90,47 @@ test('a malformed request-target is rejected instead of crashing the process', a
   }
   // Still serving afterwards.
   assert.equal(await rawRequestStatus(port, '/nope'), 404);
+});
+
+test('the host\'s session redirect is followed, a redirect off-origin is not', async (t) => {
+  // The real host answers every /getZones with a 307 to a per-session UUID path
+  // (`/<uuid>/getZones`). 0.4.0 refused all redirects, so bootstrap died with
+  // "fetch failed / unexpected redirect" against real hardware.
+  let mode = 'session';
+  const host = createServer((req, res) => {
+    if (mode === 'session' && req.url === '/getZones') {
+      res.writeHead(307, { location: '/7af4c62b-3943-4858-b768-0ed38616f8ce/getZones' });
+      return res.end();
+    }
+    if (mode === 'offsite' && req.url === '/getZones') {
+      res.writeHead(307, { location: 'http://169.254.169.254/latest/meta-data' });
+      return res.end();
+    }
+    if (mode === 'loop') {
+      res.writeHead(307, { location: `/hop${Math.random()}` });
+      return res.end();
+    }
+    res.writeHead(200, { 'content-type': 'text/xml' });
+    res.end('<?xml version="1.0"?><zoneConfig><zones><zone udn="uuid:z1">'
+      + '<room udn="uuid:r1" name="Kitchen" powerState="ACTIVE" /></zone></zones></zoneConfig>');
+  });
+  await new Promise((resolve, reject) => {
+    host.listen(RAUMFELD_HTTP_PORT, '127.0.0.1', resolve).once('error', reject);
+  });
+  t.after(() => new Promise((resolve) => host.close(resolve)));
+
+  const client = new RaumfeldClient('127.0.0.1', log);
+  const zones = await client.getZones();
+  assert.equal(zones.length, 1, 'the 307 to the session path should have been followed');
+  assert.equal(zones[0].rooms[0].name, 'Kitchen');
+
+  // Same-origin hops are free; a hop to another origin must clear the guard, or
+  // the redirect turns the fetch into an SSRF primitive aimed at cloud metadata.
+  mode = 'offsite';
+  await assert.rejects(client.getZones(), /Refusing redirect/);
+
+  mode = 'loop';
+  await assert.rejects(client.getZones(), /Too many redirects/);
 });
 
 test('ssdpSearch resolves without throwing on unusable bind addresses', async () => {
