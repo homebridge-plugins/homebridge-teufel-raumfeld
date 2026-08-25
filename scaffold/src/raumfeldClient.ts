@@ -746,25 +746,91 @@ async function readTextCapped(res: Response, maxBytes: number): Promise<string> 
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * Redirect hops we will follow. The host uses exactly one per request; anything
+ * past a handful is a loop or a host trying to walk us somewhere.
+ */
+const MAX_REDIRECTS = 5;
+
+/**
+ * Resolve one `Location` against the URL that produced it, and return it only if
+ * the hop is safe to follow.
+ *
+ * Following redirects blindly is what makes a fetch an SSRF primitive: the first
+ * URL passes the private-address check, and the 3xx then hands us to loopback or
+ * the public internet. So a hop to a *different* origin must clear the guard
+ * again. A same-origin hop moves us nowhere new and is always allowed — which is
+ * both what the host actually does and what keeps a host configured by name
+ * (`raumfeld.local`, which the guard rejects on purpose) working.
+ */
+function nextRedirectTarget(location: string, from: string): URL | undefined {
+  let resolved: URL;
+  let origin: string;
+  try {
+    resolved = new URL(location, from);
+    origin = new URL(from).origin;
+  } catch {
+    return undefined;
+  }
+  if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return undefined;
+  if (resolved.origin === origin) return resolved;
+  return privateHttpUrl(resolved.toString());
+}
+
 async function fetchWithTimeout(
   url: string,
   init: Parameters<typeof fetch>[1],
   timeoutMs: number,
 ): Promise<Response> {
-  const controller = new AbortController();
-  // Phase 1: bound the header exchange. Always cleared once fetch settles, so a
-  // caller that never touches the body leaves no armed timer behind.
-  const headerTimer = setTimeout(() => controller.abort(), timeoutMs);
+  let target = url;
+  let hopInit: Parameters<typeof fetch>[1] = init;
+  let controller: AbortController;
   let res: Response;
-  try {
-    // `redirect: 'error'` is a security control, not a preference: following a
-    // 3xx would let a host that passed the private-address check hand us off to
-    // localhost or the public internet afterwards. Nothing in the Raumfeld or
-    // UPnP surface legitimately redirects.
-    res = await fetch(url, { redirect: 'error', ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(headerTimer);
+
+  // The Raumfeld host web service answers *every* /getZones and /listDevices
+  // with a 307 to a per-session UUID path (`/<uuid>/getZones`), so refusing
+  // redirects outright — as 0.4.0 did — breaks all host communication. Follow
+  // them by hand instead, re-checking each hop against the private-address
+  // guard, so the security property survives without blocking the real host.
+  for (let hop = 0; ; hop++) {
+    controller = new AbortController();
+    // Phase 1: bound the header exchange. Always cleared once fetch settles, so a
+    // caller that never touches the body leaves no armed timer behind.
+    const headerTimer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      res = await fetch(target, { ...hopInit, redirect: 'manual', signal: controller.signal });
+    } finally {
+      clearTimeout(headerTimer);
+    }
+
+    if (res.status !== 301 && res.status !== 302 && res.status !== 303
+      && res.status !== 307 && res.status !== 308) break;
+
+    if (hop >= MAX_REDIRECTS) {
+      throw new Error(`Too many redirects (${MAX_REDIRECTS}) starting at ${url}`);
+    }
+    const location = res.headers.get('location');
+    const next = location ? nextRedirectTarget(location, target) : undefined;
+    if (!next) {
+      throw new Error(
+        `Refusing redirect from ${target} to ${location ?? '(no Location header)'}`
+        + ' — redirects must stay on plain HTTP(S) in private address space',
+      );
+    }
+    // A redirect body is dead weight (the host sends Content-Length: 0); cancel
+    // it so the socket is released rather than left for the GC.
+    await res.body?.cancel().catch(() => undefined);
+
+    const method = (hopInit?.method ?? 'GET').toUpperCase();
+    // Per fetch semantics: 303, and 301/302 on a POST, continue as a bodyless
+    // GET. 307/308 preserve method and body — which is what the host uses, and
+    // what the SOAP POSTs need.
+    if (res.status === 303 || ((res.status === 301 || res.status === 302) && method !== 'GET' && method !== 'HEAD')) {
+      hopInit = { ...hopInit, method: 'GET', body: undefined };
+    }
+    target = next.toString();
   }
+
   // Phase 2: fetch resolves on headers, so a stalled body could still hang. Bound
   // each body read with its own timer on the same controller, cleared on settle.
   const wrap = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) =>

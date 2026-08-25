@@ -5,7 +5,7 @@ import { isIP } from 'node:net';
 // Shared with the plugin itself so discovery and the address guards can't drift
 // apart. Requires `npm run build` to have produced dist/ (the published tarball
 // always ships it).
-import { isPrivateIPv4 } from '../dist/net.js';
+import { isPrivateIPv4, privateHttpUrl } from '../dist/net.js';
 import { ssdpSearch } from '../dist/ssdpClient.js';
 
 const RAUMFELD_HTTP_PORT = 47365;
@@ -165,28 +165,63 @@ function enumerateCidr(cidr) {
   return hosts;
 }
 
+const MAX_REDIRECTS = 5;
+
+/**
+ * GET `url`, following redirects by hand. The Raumfeld host answers every
+ * /getZones with a 307 to a per-session UUID path, so refusing 3xx outright
+ * breaks both discovery and the status pill. Each hop is re-checked against the
+ * private-address guard, so a probed host still can't bounce us to an address
+ * that never passed that check. Mirrors fetchWithTimeout() in src/.
+ */
 async function fetchWithTimeout(url, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    // No redirects: a 3xx would let a probed host bounce us to an address that
-    // never passed the private-range check.
-    return await fetch(url, { redirect: 'error', signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+  return (await fetchFollowing(url, timeoutMs)).res;
+}
+
+/**
+ * The redirect-following GET, also handing back the controller for the final
+ * hop so a caller that reads the body can bound that read on the same request.
+ */
+async function fetchFollowing(url, timeoutMs) {
+  let target = url;
+  for (let hop = 0; ; hop++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetch(target, { redirect: 'manual', signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (![301, 302, 303, 307, 308].includes(res.status)) return { res, controller };
+    if (hop >= MAX_REDIRECTS) throw new Error(`Too many redirects starting at ${url}`);
+
+    const location = res.headers.get('location');
+    let next;
+    try {
+      const resolved = new URL(location, target);
+      const sameOrigin = resolved.origin === new URL(target).origin;
+      const httpish = resolved.protocol === 'http:' || resolved.protocol === 'https:';
+      // Same-origin hops move us nowhere new; anything else must clear the guard.
+      next = httpish && (sameOrigin ? resolved : privateHttpUrl(resolved.toString()));
+    } catch {
+      next = undefined;
+    }
+    if (!next) throw new Error(`Refusing redirect from ${target} to ${location ?? '(none)'}`);
+    await res.body?.cancel().catch(() => undefined);
+    target = next.toString();
   }
 }
 
 /** Fetch and consume a response body under one deadline. */
 async function fetchTextWithTimeout(url, timeoutMs) {
-  const controller = new AbortController();
+  const { res, controller } = await fetchFollowing(url, timeoutMs);
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    return { res, text: '' };
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { redirect: 'error', signal: controller.signal });
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => undefined);
-      return { res, text: '' };
-    }
     return { res, text: await res.text() };
   } finally {
     clearTimeout(timer);

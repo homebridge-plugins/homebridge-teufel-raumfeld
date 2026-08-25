@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-25
+
+### Fixed
+- Follow the host's session redirect again. 0.4.0 refused every 3xx as an
+  anti-SSRF measure, on the assumption that nothing in the Raumfeld surface
+  redirects. It does: the host answers *every* `/getZones` and `/listDevices`
+  with a 307 to a per-session UUID path (`/<uuid>/getZones`), so 0.4.0 could not
+  talk to a real host at all — bootstrap failed with
+  `TypeError: fetch failed … unexpected redirect`. Redirects are now followed by
+  hand, capped at 5 hops. A hop to a different origin must still pass the
+  private-address guard, so the SSRF protection stands; a same-origin hop is
+  always allowed, which also keeps a host configured by name working. The
+  custom UI's discovery and status pill had the same defect and the same fix.
+
 ## [0.4.0] - 2026-08-25
 
 ### Security
