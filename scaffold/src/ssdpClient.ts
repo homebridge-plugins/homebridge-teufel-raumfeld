@@ -104,10 +104,9 @@ export async function ssdpSearch(options: SsdpSearchOptions = {}): Promise<strin
   }));
 
   try {
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, timeoutMs);
-      timer.unref?.();
-    });
+    // Not unref'd: when every bind failed this timer is the only pending handle,
+    // and an unref'd one would let the event loop drain with the search unresolved.
+    await new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
   } finally {
     for (const socket of sockets) closeQuietly(socket);
   }

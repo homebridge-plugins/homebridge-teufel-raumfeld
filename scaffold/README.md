@@ -50,8 +50,8 @@ with the plugin), or add a platform block to `config.json`:
 
 | Option | Default | Description |
 |---|---|---|
-| `autoDiscover` | `true` | Find the Raumfeld host via SSDP. Turn off to use `host`. |
-| `host` | — | IP/hostname of the Raumfeld host. Required when `autoDiscover` is off, or when Homebridge and the speakers are on different subnets (SSDP can’t cross subnets). |
+| `autoDiscover` | `true` | Find the Raumfeld host automatically when no `host` is set. |
+| `host` | — | IP/hostname of the Raumfeld host. When set it always wins and discovery is skipped. Required when `autoDiscover` is off, or when Homebridge and the speakers are on different subnets (SSDP can’t cross subnets). |
 | `pollInterval` | `30` | Safety-net poll seconds (30–60); live group changes arrive instantly via the host long-poll. |
 | `airplay.enabled` | `true` | Advertise zones as AirPlay receivers. Requires `shairport-sync` on the host — see [AirPlay streaming](#airplay-streaming). |
 | `airplay.binaryPath` | `shairport-sync` | Path to the `shairport-sync` binary. Default finds it on `PATH`. |
@@ -127,7 +127,7 @@ Stereo L · Stereo M · One · One M · Stream · Soundbar · Connector
 
 ## Requirements
 
-- Node.js ≥ 18
+- Node.js 22, 24, or 26
 - Homebridge ≥ 1.8 (Homebridge 2.0 ready)
 - A Raumfeld host (any Raumfeld/Teufel speaker or Connector acting as host) reachable on port `47365`
 - *(AirPlay only)* `shairport-sync` installed on the Homebridge host — see [AirPlay streaming](#airplay-streaming)

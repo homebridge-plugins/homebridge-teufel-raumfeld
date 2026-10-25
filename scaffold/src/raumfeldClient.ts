@@ -1,5 +1,6 @@
 import type { Logging } from 'homebridge';
 import { networkInterfaces } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { XMLParser } from 'fast-xml-parser';
 import { isPrivateIPv4, privateHttpUrl } from './net.js';
 import { ssdpSearch } from './ssdpClient.js';
@@ -44,6 +45,9 @@ interface ResolvedRenderer {
 
 /** Floor between on-demand /listDevices refreshes triggered by an unknown udn. */
 const LOCATION_REFRESH_MIN_INTERVAL_MS = 10000;
+/** How long a room may take to land in a newly created zone, renderer listed. */
+const ZONE_CREATE_TIMEOUT_MS = 8000;
+const ZONE_POLL_INTERVAL_MS = 300;
 
 const SOAP_SERVICE = {
   rendering: 'urn:schemas-upnp-org:service:RenderingControl:1',
@@ -285,9 +289,8 @@ export class RaumfeldClient {
   /**
    * Point a renderer at a media URI (UPnP AVTransport SetAVTransportURI), then
    * the caller issues Play. `metadata` is a DIDL-Lite document describing the
-   * item; many renderers accept an empty string. NOTE: spike/experimental — used
-   * to test whether a Raumfeld renderer will play a foreign HTTP stream (the
-   * precondition for the AirPlay re-serve path). Not yet wired into the plugin.
+   * item; many renderers accept an empty string. Used by the AirPlay bridge to
+   * point a zone at its re-served stream.
    */
   async setAvTransportUri(rendererUdn: string, uri: string, metadata = ''): Promise<void> {
     await this.soapRequired(rendererUdn, 'avTransport', 'SetAVTransportURI', {
@@ -338,6 +341,48 @@ export class RaumfeldClient {
     const res = await fetchWithTimeout(url, {}, 5000);
     void res.body?.cancel(); // no body needed; release the socket
     if (!res.ok) throw new Error(`connectRoomToZone -> HTTP ${res.status}`);
+  }
+
+  /**
+   * The zone (virtual) renderer to play a stream on for `roomUdn`. A room only
+   * plays what its zone's renderer sends it: the room's own renderer accepts
+   * SetAVTransportURI and Play, connects to the stream, and stays silent. An
+   * unassigned room has no zone, so one is created for it first — the same
+   * thing the Raumfeld app does when playback is started on a lone room.
+   */
+  async zoneRendererForRoom(roomUdn: string, timeoutMs = ZONE_CREATE_TIMEOUT_MS): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    let zoneUdn = await this.zoneOfRoom(roomUdn);
+    if (!zoneUdn) {
+      this.log.info(`Creating a Raumfeld zone for room ${roomUdn} to play on.`);
+      await this.connectRoomToZone(roomUdn, ''); // empty zoneUDN = new zone
+      while (!(zoneUdn = await this.zoneOfRoom(roomUdn))) {
+        if (Date.now() > deadline) throw new Error(`room ${roomUdn} did not join a new zone within ${timeoutMs} ms`);
+        await delay(ZONE_POLL_INTERVAL_MS);
+      }
+    }
+    // A new zone's renderer shows up in /listDevices shortly after the zone does.
+    while (!this.locations.has(zoneUdn)) {
+      await this.refreshDeviceLocations();
+      if (this.locations.has(zoneUdn)) break;
+      if (Date.now() > deadline) throw new Error(`zone renderer ${zoneUdn} was not listed within ${timeoutMs} ms`);
+      await delay(ZONE_POLL_INTERVAL_MS);
+    }
+    return zoneUdn;
+  }
+
+  /**
+   * The udn of the zone `roomUdn` belongs to, if any. Reads /getZones without
+   * enrich() or recording its updateId, which belongs to the long-poll.
+   */
+  private async zoneOfRoom(roomUdn: string): Promise<string | undefined> {
+    const res = await fetchWithTimeout(`${this.baseUrl}/getZones`, {}, 6000);
+    if (!res.ok) {
+      void res.body?.cancel();
+      throw new Error(`/getZones -> HTTP ${res.status}`);
+    }
+    const { zones } = this.parseZoneConfig(await res.text());
+    return zones.find((zone) => zone.rooms.some((room) => room.udn === roomUdn))?.udn;
   }
 
   async dropRoom(roomUdn: string): Promise<void> {
@@ -440,13 +485,23 @@ export class RaumfeldClient {
       }),
     );
 
-    // Zones inherit their lead room's state.
-    for (const zone of state.zones) {
+    // Zones inherit their lead room's volume. Play state lives on the zone
+    // renderer: a room's own renderer has no queue and reports NO_MEDIA_PRESENT
+    // even while its zone plays, so read the zone's and hand it to its rooms.
+    await Promise.all(state.zones.map(async (zone) => {
       const lead = zone.rooms.find((r) => r.rendererUdn === zone.leadRendererUdn) ?? zone.rooms[0];
       zone.volume = lead?.volume;
       zone.mute = lead?.mute;
       zone.playing = lead?.playing;
-    }
+      try {
+        const playing = await this.queryTransportState(zone.udn);
+        if (playing === undefined) return;
+        zone.playing = playing;
+        for (const room of zone.rooms) room.playing = playing;
+      } catch (err) {
+        this.log.debug(`enrich(zone ${zone.name}) play state skipped: ${(err as Error).message}`);
+      }
+    }));
   }
 
   private async queryVolume(rendererUdn: string): Promise<{ volume: number; mute: boolean } | undefined> {
@@ -639,7 +694,7 @@ export class RaumfeldClient {
 interface LocalInterface {
   name: string;
   address: string;
-  /** e.g. "10.168.11.26/24" — absent on platforms that don't report it. */
+  /** e.g. "192.168.20.26/24" — absent on platforms that don't report it. */
   cidr?: string;
 }
 
@@ -676,7 +731,7 @@ function localSubnets(limit = 6): string[] {
   return [...networks];
 }
 
-/** "10.168.11.26/24" -> "10.168.11.0/24"; undefined if malformed. */
+/** "192.168.20.26/24" -> "192.168.20.0/24"; undefined if malformed. */
 function networkAddressOf(cidr: string): string | undefined {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(cidr.trim());
   if (!m) return undefined;
@@ -860,7 +915,7 @@ function buildSoapEnvelope(serviceType: string, action: string, args: Record<str
     + '</s:Body></s:Envelope>';
 }
 
-function escapeXml(value: string): string {
+export function escapeXml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -906,7 +961,7 @@ function firstDefined(...values: unknown[]): unknown {
 function sanitizeHapName(raw: string): string {
   const cleaned = raw
     .replace(/[&+]/g, ' and ')
-    // Keep Unicode letters/numbers (covers umlauts like "Küche") plus the
+    // Keep Unicode letters/numbers (covers umlauts like "Gästezimmer") plus the
     // punctuation HAP accepts; everything else (emoji, symbols) is dropped.
     .replace(/[^\p{L}\p{N} .,'()-]/gu, ' ')
     .replace(/\s+/g, ' ')

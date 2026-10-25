@@ -17,6 +17,12 @@ export interface UpdateState {
   lockedInGroup: boolean;
   /** Renderer udn this accessory writes to directly (its own, or the group lead). */
   controlUdn: string;
+  /**
+   * Zone renderer for play/pause when it differs from controlUdn. A room's own
+   * renderer has no queue — Play faults "nothing queued", Pause UPnP 501 — so
+   * transport goes to the zone the room is in. Unset for a room in no zone.
+   */
+  transportUdn?: string;
   /** Other renderer udns kept in sync for a group (volume/mute), when syncGroupVolume. */
   memberUdns?: string[];
   /** For a locked member: the group lead renderer that writes are routed to. */
@@ -40,6 +46,7 @@ export class ZoneAccessory {
   private readonly speaker: Service;
   private locked = false;
   private controlUdn = '';
+  private transportUdn?: string;
   private memberUdns: string[] = [];
   private groupLeadUdn?: string;
   private syncGroupVolume = true;
@@ -67,7 +74,7 @@ export class ZoneAccessory {
     this.speaker.getCharacteristic(Characteristic.On)
       .onSet(this.wrapWrite('play/pause', async (value) => {
         try {
-          await this.platform.client.setPlayState(this.writeTarget(), value ? 0 : 1);
+          await this.platform.client.setPlayState(this.transportTarget(), value ? 0 : 1);
         } catch (err) {
           if (err instanceof SoapFault && err.isTransitionUnavailable) {
             this.revertNothingQueued();
@@ -130,6 +137,7 @@ export class ZoneAccessory {
 
     this.locked = state.lockedInGroup;
     this.controlUdn = state.controlUdn;
+    this.transportUdn = state.transportUdn;
     this.memberUdns = state.memberUdns ?? [];
     this.groupLeadUdn = state.groupLeadUdn;
     this.syncGroupVolume = state.syncGroupVolume ?? true;
@@ -159,6 +167,12 @@ export class ZoneAccessory {
       return this.groupLeadUdn;
     }
     return this.controlUdn;
+  }
+
+  /** Where a play/pause for this accessory should land right now. */
+  private transportTarget(): string {
+    if (this.locked) return this.writeTarget();
+    return this.transportUdn ?? this.controlUdn;
   }
 
   /** Extra renderers to keep in lock-step for a group (empty for a single room). */

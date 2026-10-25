@@ -1,5 +1,7 @@
 import type { Logging } from 'homebridge';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import type { Readable } from 'node:stream';
 
 /**
@@ -28,6 +30,8 @@ export interface ReceiverCallbacks {
 
 /** Milliseconds of no PCM before a session is considered ended. */
 const IDLE_TIMEOUT_MS = 2000;
+/** stderr lines quoted in the warning when shairport-sync dies unexpectedly. */
+const STDERR_TAIL_LINES = 3;
 
 export class AirPlayReceiver {
   private child?: ChildProcessWithoutNullStreams;
@@ -45,6 +49,8 @@ export class AirPlayReceiver {
     private readonly callbacks: ReceiverCallbacks,
     /** AirPlay 1 pairing password; unset means anyone on the LAN may stream. */
     private readonly password?: string,
+    /** shairport-sync config file; unset leaves it reading the system one. */
+    private readonly configFile?: string,
   ) {}
 
   /** True if the configured shairport-sync binary runs and reports a version. */
@@ -55,6 +61,31 @@ export class AirPlayReceiver {
     } catch {
       return false;
     }
+  }
+
+  /** OS pid of the running shairport-sync, if any. */
+  get pid(): number | undefined {
+    return this.child?.pid;
+  }
+
+  /**
+   * True if `pid` is a live shairport-sync started the way {@link start} starts
+   * one. Guards the orphan cleanup against a pid that the OS has since handed to
+   * an unrelated process.
+   */
+  static isReceiverProcess(pid: number, binaryPath: string): boolean {
+    let argv: string[];
+    try {
+      argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+    } catch {
+      // No procfs (macOS): ask ps. Splitting on spaces is fine for this check.
+      const res = spawnSync('ps', ['-p', String(pid), '-o', 'args='], { timeout: 2000 });
+      argv = res.status === 0 ? res.stdout.toString().trim().split(/\s+/) : [];
+    }
+    const binary = basename(binaryPath);
+    // argv[0] may be an interpreter (a wrapper script), so look for the binary anywhere.
+    return argv.some((arg) => basename(arg) === binary)
+      && argv.includes('-o') && argv.includes('stdout') && argv.includes('--port');
   }
 
   start(): void {
@@ -69,6 +100,7 @@ export class AirPlayReceiver {
     // audio to this zone. popt accepts the `--password=<pw>` form as one argv
     // element; there is no shell, so the value needs no quoting.
     if (this.password) args.push(`--password=${this.password}`);
+    if (this.configFile) args.push('-c', this.configFile);
     // Redact before logging — argv is already visible in `ps` to local users,
     // but the Homebridge log is far more likely to be pasted into an issue.
     const printableArgs = args.map((arg) => (arg.startsWith('--password=') ? '--password=***' : arg));
@@ -76,10 +108,15 @@ export class AirPlayReceiver {
     const child = spawn(this.binaryPath, args);
     this.child = child;
 
+    // Keep the last few stderr lines so a crash can say why without debug logging.
+    const stderrTail: string[] = [];
     child.stdout.on('data', (chunk: Buffer) => this.onPcm(chunk));
     child.stderr.on('data', (chunk: Buffer) => {
-      const line = chunk.toString().trim();
-      if (line) this.log.debug(`AirPlay[${this.name}] shairport: ${line}`);
+      for (const line of chunk.toString().split('\n').map((l) => l.trim()).filter(Boolean)) {
+        this.log.debug(`AirPlay[${this.name}] shairport: ${line}`);
+        stderrTail.push(line);
+        if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift();
+      }
     });
     child.once('error', (err) => {
       this.log.error(`AirPlay[${this.name}] failed to start shairport-sync: ${err.message}`);
@@ -89,7 +126,8 @@ export class AirPlayReceiver {
     child.once('close', (code, signal) => {
       const unexpected = !this.stopped;
       if (unexpected) {
-        this.log.warn(`AirPlay[${this.name}] shairport-sync exited (code ${code}, signal ${signal}).`);
+        const why = stderrTail.length ? ` Last output: ${stderrTail.join(' | ')}` : '';
+        this.log.warn(`AirPlay[${this.name}] shairport-sync exited (code ${code}, signal ${signal}).${why}`);
       }
       this.endSession();
       if (this.child === child) this.child = undefined;

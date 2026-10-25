@@ -1,22 +1,22 @@
 {
   "displayName": "Homebridge Teufel Raumfeld",
   "name": "homebridge-teufel-raumfeld",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Control Teufel Raumfeld multiroom speakers from Apple HomeKit, with AirPlay streaming from iOS.",
   "license": "MIT",
   "author": "Alexander Peither",
-  "homepage": "https://github.com/AlexPe-Code/homebridge-teufel-raumfeld#readme",
+  "homepage": "https://github.com/homebridge-plugins/homebridge-teufel-raumfeld#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AlexPe-Code/homebridge-teufel-raumfeld.git"
+    "url": "git+https://github.com/homebridge-plugins/homebridge-teufel-raumfeld.git"
   },
   "bugs": {
-    "url": "https://github.com/AlexPe-Code/homebridge-teufel-raumfeld/issues"
+    "url": "https://github.com/homebridge-plugins/homebridge-teufel-raumfeld/issues"
   },
   "type": "module",
   "engines": {
     "homebridge": "^1.8.0 || ^2.0.0",
-    "node": "^18.20.0 || ^20.18.0 || ^22.10.0 || ^24.0.0 || ^26.0.0"
+    "node": "^22.10.0 || ^24.0.0 || ^26.0.0"
   },
   "main": "dist/index.js",
   "files": [
@@ -44,18 +44,18 @@
     "openhome"
   ],
   "dependencies": {
-    "@homebridge/plugin-ui-utils": "^1.0.3",
-    "fast-xml-parser": "^5.11.0"
+    "@homebridge/plugin-ui-utils": "^2.2.6",
+    "fast-xml-parser": "^5.11.2"
   },
   "devDependencies": {
-    "@eslint/js": "^9.13.0",
+    "@eslint/js": "^9.39.5",
     "@types/node": "^22.0.0",
-    "eslint": "^9.13.0",
-    "homebridge": "^1.8.0",
+    "eslint": "^9.39.5",
+    "homebridge": "^2.0.0",
     "nodemon": "^3.1.7",
     "rimraf": "^6.0.1",
     "typescript": "^5.5.0",
-    "typescript-eslint": "^8.10.0"
+    "typescript-eslint": "^8.72.0"
   },
   "//dependencies-note": "Kept deliberately small. SOAP is hand-rolled over global fetch and SSDP M-SEARCH over node:dgram (src/ssdpClient.ts, replacing the unmaintained node-ssdp and its vulnerable `ip` transitive dep); only /getZones and UPnP device-description XML need fast-xml-parser. AirPlay reception is an external shairport-sync process spawned by src/airplayBridge.ts, not a library.",
   "funding": []

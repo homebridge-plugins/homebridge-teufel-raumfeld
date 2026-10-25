@@ -16,13 +16,13 @@
       },
       "autoDiscover": {
         "title": "Auto-discover host",
-        "description": "Find the Raumfeld host automatically via SSDP.",
+        "description": "Find the Raumfeld host automatically (SSDP, then a scan of local subnets) when no host is set.",
         "type": "boolean",
         "default": true
       },
       "host": {
         "title": "Raumfeld host",
-        "description": "IP or hostname of the Raumfeld host. Ignored when auto-discover is on.",
+        "description": "IP or hostname of the Raumfeld host. When set, it is always used and discovery is skipped. Needed when the speakers are on a different subnet.",
         "type": "string",
         "placeholder": "192.168.178.42",
         "format": "hostname",
