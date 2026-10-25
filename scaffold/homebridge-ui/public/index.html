@@ -232,6 +232,11 @@ async function init() {
   $('autoDiscover').addEventListener('change', refreshLive);
   $('discoverySubnet').addEventListener('change', refreshLive);
   $('save').addEventListener('click', save);
+  // 'input' too, so text typed and saved without leaving the field still counts.
+  // Delegated, because the speaker toggles are re-rendered on every refresh.
+  const onEdit = () => syncConfig().catch((e) => homebridge.toast.error(String(e.message ?? e), 'Raumfeld'));
+  document.addEventListener('input', onEdit);
+  document.addEventListener('change', onEdit);
 }
 
 async function refreshLive() {
@@ -314,29 +319,18 @@ function renderZones(zones) {
   });
 }
 
+// Push the form into Homebridge UI's copy of the config on every edit. Its own
+// modal Save button writes that copy, so a page that only updates it from our
+// Save Changes button loses every edit saved the other way.
+async function syncConfig() {
+  applyForm();
+  await homebridge.updatePluginConfig([config]);
+}
+
 async function save() {
   $('save').disabled = true;
   try {
-    const devices = liveDevices.map((room) => ({
-      udn: room.udn,
-      name: room.name,
-      model: room.model,
-      exposed: document.querySelector('input[data-udn="' + cssEsc(room.udn) + '"]')?.checked !== false,
-    }));
-
-    config.platform = 'Raumfeld';
-    config.name = config.name ?? 'Raumfeld';
-    config.autoDiscover = $('autoDiscover').checked;
-    config.host = $('host').value.trim() || undefined;
-    config.discoverySubnet = $('discoverySubnet').value.trim() || undefined;
-    // Merge — the UI only edits enabled. Preserve advanced fields
-    // (binaryPath/streamHost/streamPort) that have no control on this form.
-    config.airplay = { ...config.airplay, enabled: $('airplayEnabled').checked };
-    delete config.airplay.bufferMs;
-    config.multiroom = { exposeGroups: $('exposeGroups').checked, syncGroupVolume: $('syncGroupVolume').checked };
-    if (devices.length) config.devices = devices;
-
-    await homebridge.updatePluginConfig([config]);
+    await syncConfig();
     await homebridge.savePluginConfig();
     homebridge.toast.success('Saved. Restart Homebridge to apply.', 'Raumfeld');
   } catch (e) {
@@ -344,6 +338,27 @@ async function save() {
   } finally {
     $('save').disabled = false;
   }
+}
+
+function applyForm() {
+  const devices = liveDevices.map((room) => ({
+    udn: room.udn,
+    name: room.name,
+    model: room.model,
+    exposed: document.querySelector('input[data-udn="' + cssEsc(room.udn) + '"]')?.checked !== false,
+  }));
+
+  config.platform = 'Raumfeld';
+  config.name = config.name ?? 'Raumfeld';
+  config.autoDiscover = $('autoDiscover').checked;
+  config.host = $('host').value.trim() || undefined;
+  config.discoverySubnet = $('discoverySubnet').value.trim() || undefined;
+  // Merge — the UI only edits enabled. Preserve advanced fields
+  // (binaryPath/streamHost/streamPort) that have no control on this form.
+  config.airplay = { ...config.airplay, enabled: $('airplayEnabled').checked };
+  delete config.airplay.bufferMs;
+  config.multiroom = { exposeGroups: $('exposeGroups').checked, syncGroupVolume: $('syncGroupVolume').checked };
+  if (devices.length) config.devices = devices;
 }
 
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }

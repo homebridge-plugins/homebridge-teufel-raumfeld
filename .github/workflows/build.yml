@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [20.x, 22.x, 24.x]
+        node-version: [22.x, 24.x, 26.x]
     steps:
       - uses: actions/checkout@v4
       - name: Use Node.js ${{ matrix.node-version }}
@@ -26,4 +26,4 @@ jobs:
           cache-dependency-path: scaffold/package-lock.json
       - run: npm ci
       - run: npm run lint
-      - run: npm run build
+      - run: npm test

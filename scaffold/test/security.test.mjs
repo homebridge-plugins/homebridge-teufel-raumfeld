@@ -13,7 +13,7 @@ import { ssdpSearch } from '../dist/ssdpClient.js';
 const log = { info() {}, debug() {}, warn() {}, error() {} };
 
 test('private-address guard admits LAN ranges and rejects everything else', () => {
-  for (const address of ['10.0.0.1', '10.168.11.39', '172.16.0.1', '172.31.255.254', '192.168.1.50', '100.64.0.1']) {
+  for (const address of ['10.0.0.1', '10.20.30.40', '172.16.0.1', '172.31.255.254', '192.168.1.50', '100.64.0.1']) {
     assert.equal(isPrivateIPv4(address), true, `${address} should be private`);
   }
   // Loopback is the Homebridge admin API; 169.254.169.254 is cloud metadata.

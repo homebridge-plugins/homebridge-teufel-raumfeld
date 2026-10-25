@@ -4,6 +4,87 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-25
+
+### Changed
+- **Breaking:** drop Node.js 18 and 20, both past end of life. Supported Node
+  versions are now 22, 24 and 26, matching what Homebridge 2.4 itself requires.
+- Bump `@homebridge/plugin-ui-utils` to 2.x. The custom UI server uses the same
+  exports (`HomebridgePluginUiServer`, `RequestError`) and needed no changes.
+- Bump `fast-xml-parser` to 5.11.2.
+- Develop and type-check against Homebridge 2.x (`homebridge@^2.0.0` dev
+  dependency). 1.8+ remains supported at runtime; the plugin uses no API that
+  either major removed.
+- CI tests Node 22, 24 and 26 and now runs the test suite, not just the build.
+
+### Fixed
+- The Home app tile of a room now plays, pauses and shows play state through
+  the room's zone renderer. It used the room's own renderer, which has no
+  queue: Play faulted "nothing is queued", Pause failed with UPnP 501, and the
+  tile read as off while the zone was playing. Volume is still set per room.
+- AirPlay was near-inaudible. shairport-sync scales the PCM by the sender's
+  AirPlay volume (measured: peaks around -30 dBFS with an iPhone at half
+  volume), and the Raumfeld zone volume then attenuated again. Receivers now
+  start with a plugin-written `raumfeld-shairport.conf` (in the Homebridge
+  storage directory) that sets `ignore_volume_control`, so they deliver full
+  scale and volume is controlled through Raumfeld. As a side effect, receivers
+  no longer read the system `/etc/shairport-sync.conf`.
+- AirPlay playback no longer stalls in endless buffering. A Raumfeld renderer
+  reconnects once at start and buffers several seconds before playing; fed only
+  at the live rate its buffer never got ahead, and chunks were dropped whenever
+  the socket was busy, so it hit "buffer underrun", reconnected, and
+  rarely got to play. Each zone now keeps the last 4 s of audio and sends it to
+  every new connection at once, and a slow reader is queued up to 5 s instead of
+  losing chunks. Against a real Raumfeld zone: stable PLAYING after ~4 s with
+  one connection, versus ~21 s, repeated reconnects and relapses before.
+- AirPlay to a single room now goes to the room's zone renderer. It was sent to
+  the room's own renderer, which accepts the stream, connects, and plays
+  nothing — a Raumfeld room only plays what its zone renderer sends it. A room
+  that is in no zone (listed under "unassigned" by the host) gets a zone of its
+  own when an AirPlay session starts, as the Raumfeld app does when playback is
+  started on it.
+- AirPlay audio now actually plays. The renderer accepted the stream URL and
+  connected to it, but stayed silent: the stream was served as `audio/wav`,
+  while Raumfeld renderers list only `audio/x-wav` among their sink protocols,
+  and `SetAVTransportURI` was sent with empty metadata. The stream is now served
+  as `audio/x-wav` and announced with DIDL-Lite metadata naming that format.
+- AirPlay receivers left running by a Homebridge that did not shut down cleanly
+  (crash, hard kill, a child bridge killed on restart) kept their RTSP ports,
+  so after the next start every zone's `shairport-sync` exited with
+  "could not establish a service on port 50x0". The plugin now records its
+  receivers' pids in `raumfeld-airplay.pids` in the Homebridge storage
+  directory and stops any leftovers before starting new ones. A pid is only
+  signalled if it is still a `shairport-sync -o stdout --port …` process, so a
+  reused pid is left alone.
+- A `shairport-sync` that exits on launch no longer respawns in a tight loop.
+  Every zone update restarted the receiver at once, skipping the 5 s restart
+  delay; the delay is now respected and doubles on each consecutive crash (up to
+  5 minutes), resetting once a session streams audio. The exit warning now
+  quotes shairport-sync's last output lines, so the cause shows without debug
+  logging.
+- Settings edited in the custom UI were lost when saved with the Homebridge UI's
+  own modal **Save** button. The page only handed its edits to the Homebridge UI
+  from its own **Save Changes** button, so the modal button wrote the
+  unchanged config. Every edit is now passed on immediately, as
+  `@homebridge/plugin-ui-utils` requires, and both buttons save.
+- A configured `host` is now always used. Before, leaving `autoDiscover` at its
+  default of on silently ignored `host` and ran discovery instead — so with the
+  speakers on another subnet, which discovery cannot see, the plugin failed with
+  "No Raumfeld host found" even though the host was set (and the custom UI,
+  which already preferred `host`, showed it as reachable). The error message
+  now says which case applies.
+- SSDP discovery could silently never finish. The collect timer was `unref()`'d,
+  so when no interface could be bound it was the only pending handle and the
+  event loop drained with the search unresolved. Inside Homebridge other
+  handles masked this; in a bare process (the custom UI server, the test
+  runner) discovery just stopped.
+
+### Security
+- Resolve the high-severity `brace-expansion` (GHSA-q2hr-2g5m-vwhr,
+  GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p) and `js-yaml` (GHSA-2883-xcg3-v3hh)
+  advisories. Both were dev-only dependencies (eslint, nodemon, rimraf) and were
+  never part of the published package.
+
 ## [0.4.1] - 2026-08-25
 
 ### Fixed
@@ -153,7 +234,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - Sanitize room and zone names before they reach HomeKit so HAP-NodeJS no longer
-  rejects them. Zone names were joined with `+` (e.g. `Bad + Küche`), an
+  rejects them. Zone names were joined with `+` (e.g. `Büro + Gästezimmer`), an
   unsupported character that triggered an "invalid 'Name' characteristic" warning
   and could stop the accessory being added in the Home app. `&`/`+` are now
   spelled out as "and", unsupported symbols/emoji are dropped, and the name is

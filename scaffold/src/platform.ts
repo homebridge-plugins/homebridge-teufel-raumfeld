@@ -8,6 +8,7 @@ import type {
   Service,
 } from 'homebridge';
 
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
@@ -80,13 +81,24 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
   }
 
   private async bootstrap(): Promise<void> {
-    const host = this.config.autoDiscover !== false
-      ? await RaumfeldClient.discover(this.log, this.config.discoverySubnet)
-      : this.config.host;
+    // A configured host always wins, matching the custom UI. Discovery only
+    // fills in when none is set — otherwise a host on another subnet, which
+    // discovery cannot see, is ignored whenever autoDiscover is left at its
+    // default of on.
+    const configuredHost = this.config.host?.trim() || undefined;
+    const host = configuredHost
+      ?? (this.config.autoDiscover !== false
+        ? await RaumfeldClient.discover(this.log, this.config.discoverySubnet)
+        : undefined);
     if (this.shuttingDown) return;
 
     if (!host) {
-      this.log.error('No Raumfeld host found. Enable auto-discover or set "host" in config.');
+      this.log.error(
+        this.config.autoDiscover !== false
+          ? 'No Raumfeld host found by auto-discover. If the speakers are on another subnet, set "host" '
+            + '(or "discoverySubnet") in config.'
+          : 'Auto-discover is off and no "host" is set in config.',
+      );
       return;
     }
 
@@ -105,6 +117,8 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
       streamHost: this.config.airplay?.streamHost,
       streamPort: this.config.airplay?.streamPort ?? 8099,
       password: this.config.airplay?.password?.trim() || undefined,
+      pidFile: join(this.api.user.storagePath(), 'raumfeld-airplay.pids'),
+      configFile: join(this.api.user.storagePath(), 'raumfeld-shairport.conf'),
     });
 
     this.running = true;
@@ -166,6 +180,13 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
     const seen = new Set<string>();
     const syncGroupVolume = this.config.multiroom?.syncGroupVolume !== false;
 
+    // room udn -> the zone it is in (single-room zones too). Its renderer is the
+    // only one with a queue; a room's own renderer plays nothing it is sent.
+    const zoneByRoom = new Map<string, string>();
+    for (const zone of state.zones) {
+      for (const room of zone.rooms) zoneByRoom.set(room.udn, zone.udn);
+    }
+
     // room udn -> the group lead renderer it should be controlled through.
     const groupLeadByRoom = new Map<string, string>();
     for (const zone of state.zones) {
@@ -184,6 +205,7 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
         room,
         lockedInGroup,
         controlUdn: room.rendererUdn,
+        transportUdn: zoneByRoom.get(room.udn),
         groupLeadUdn: groupLeadByRoom.get(room.udn),
         syncGroupVolume,
       });
@@ -209,10 +231,18 @@ export class RaumfeldPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    // Ungrouped, exposed rooms are AirPlay targets too.
+    // Ungrouped, exposed rooms are AirPlay targets too, played through their
+    // zone renderer (see zoneByRoom).
     for (const room of state.rooms) {
       if (!this.isExposed(room) || groupLeadByRoom.has(room.udn)) continue;
-      airplayTargets.push({ zoneId: room.udn, name: room.name, rendererUdn: room.rendererUdn, memberUdns: [] });
+      const zoneUdn = zoneByRoom.get(room.udn);
+      airplayTargets.push({
+        zoneId: room.udn,
+        name: room.name,
+        rendererUdn: zoneUdn ?? room.rendererUdn,
+        memberUdns: [],
+        unassignedRoomUdn: zoneUdn ? undefined : room.udn,
+      });
     }
 
     // 4. Prune.

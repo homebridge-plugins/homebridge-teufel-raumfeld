@@ -20,17 +20,36 @@ import type { Readable } from 'node:stream';
 export const PCM_SAMPLE_RATE = 44100;
 export const PCM_CHANNELS = 2;
 export const PCM_BITS = 16;
+/**
+ * Raumfeld renderers list `audio/x-wav` among their sink protocols, not
+ * `audio/wav`; served under the latter they accept the URL, connect, and play
+ * nothing.
+ */
+export const STREAM_MIME_TYPE = 'audio/x-wav';
 
 /** Advertised body length for the endless stream (~2 GiB; real end = socket close). */
 const STREAM_CONTENT_LENGTH = String(0x7fffffff);
 /** One renderer is expected; a second slot allows a clean reconnect overlap. */
 const MAX_RESPONSES_PER_ZONE = 2;
+const PCM_BYTES_PER_SECOND = PCM_SAMPLE_RATE * PCM_CHANNELS * (PCM_BITS / 8);
+/**
+ * Recent audio replayed to every new renderer connection. A Raumfeld renderer
+ * reconnects once at start and buffers several seconds before it plays; fed
+ * only at the live (real-time) rate its buffer never gets ahead, so the first
+ * hiccup ends in "buffer underrun" and another reconnect.
+ */
+const BACKLOG_BYTES = 4 * PCM_BYTES_PER_SECOND;
+/** Audio queued for a slow reader before chunks are dropped for it. */
+const MAX_QUEUED_BYTES = 5 * PCM_BYTES_PER_SECOND;
 
 interface ZoneStream {
   /** Rotated on every new session — see {@link AirPlayStreamServer.setSource}. */
   token: string;
   source?: Readable;
   readonly responses: Set<ServerResponse>;
+  /** Most recent PCM chunks, at most {@link BACKLOG_BYTES} in total. */
+  backlog: Buffer[];
+  backlogBytes: number;
   onData?: (chunk: Buffer) => void;
   onSourceEnd?: () => void;
 }
@@ -94,6 +113,8 @@ export class AirPlayStreamServer {
       this.zones.set(zoneId, {
         token: newToken(),
         responses: new Set(),
+        backlog: [],
+        backlogBytes: 0,
       });
     }
   }
@@ -127,11 +148,18 @@ export class AirPlayStreamServer {
     zone.token = newToken();
     zone.source = source;
     const onData = (chunk: Buffer): void => {
+      // Whole chunks only, so the backlog stays frame-aligned.
+      zone.backlog.push(chunk);
+      zone.backlogBytes += chunk.length;
+      while (zone.backlogBytes - zone.backlog[0].length >= BACKLOG_BYTES) {
+        zone.backlogBytes -= zone.backlog.shift()!.length;
+      }
       for (const res of zone.responses) {
         // Renderer may have dropped between its 'close' event and this chunk;
-        // writing then throws ERR_STREAM_WRITE_AFTER_END. Skip dead sockets, and
-        // drop (don't buffer) for a backpressured one — live audio can't queue.
-        if (res.writableEnded || !res.writable || res.writableNeedDrain) continue;
+        // writing then throws ERR_STREAM_WRITE_AFTER_END. Skip dead sockets. A
+        // slow reader gets a few seconds of queue (renderers read in bursts
+        // while they buffer); past that, drop rather than grow without bound.
+        if (res.writableEnded || !res.writable || res.writableLength > MAX_QUEUED_BYTES) continue;
         try {
           res.write(chunk);
         } catch {
@@ -157,6 +185,8 @@ export class AirPlayStreamServer {
       zone.source.off('error', zone.onSourceEnd);
     }
     zone.source = undefined;
+    zone.backlog = [];
+    zone.backlogBytes = 0;
     zone.onData = undefined;
     zone.onSourceEnd = undefined;
     for (const res of zone.responses) res.end();
@@ -204,7 +234,7 @@ export class AirPlayStreamServer {
     // advertise a fixed (effectively endless) Content-Length instead and signal
     // the real end by closing the connection.
     res.writeHead(200, {
-      'Content-Type': 'audio/wav',
+      'Content-Type': STREAM_MIME_TYPE,
       'Content-Length': STREAM_CONTENT_LENGTH,
       Connection: 'close',
     });
@@ -213,6 +243,7 @@ export class AirPlayStreamServer {
       return;
     }
     res.write(wavHeader());
+    for (const chunk of zone.backlog) res.write(chunk);
     zone.responses.add(res);
     this.log.debug(`AirPlay: renderer connected to zone ${zoneId} stream.`);
     const drop = (): void => {
